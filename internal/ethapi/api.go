@@ -688,13 +688,13 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address common.Address, st
 			return nil, err
 		}
 	}
-	state, header, err := s.b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
-	if state == nil || err != nil {
+	stateDB, header, err := s.b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
+	if stateDB == nil || err != nil {
 		return nil, err
 	}
-	if storageRoot := state.GetStorageRoot(address); storageRoot != types.EmptyRootHash && storageRoot != (common.Hash{}) {
+	if storageRoot := stateDB.GetStorageRoot(address); storageRoot != types.EmptyRootHash && storageRoot != (common.Hash{}) {
 		id := trie.StorageTrieID(header.Root, crypto.Keccak256Hash(address.Bytes()), storageRoot)
-		tr, err := trie.NewStateTrie(id, state.Database().TrieDB())
+		tr, err := trie.NewStateTrie(id, stateDB.(*state.StateDB).Database().TrieDB())
 		if err != nil {
 			return nil, err
 		}
@@ -704,7 +704,7 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address common.Address, st
 	// the storage root hash and the code hash.
 	if storageTrie != nil {
 		storageHash = storageTrie.Hash()
-		codeHash = state.GetCodeHash(address)
+		codeHash = stateDB.GetCodeHash(address)
 	}
 	// Create the proofs for the storageKeys.
 	for i, key := range keys {
@@ -727,12 +727,12 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address common.Address, st
 		if err := storageTrie.Prove(crypto.Keccak256(key.Bytes()), &proof); err != nil {
 			return nil, err
 		}
-		value := (*hexutil.Big)(state.GetState(address, key).Big())
+		value := (*hexutil.Big)(stateDB.GetState(address, key).Big())
 		storageProof[i] = StorageResult{outputKey, value, proof}
 	}
 
 	// Create the accountProof.
-	tr, err := trie.NewStateTrie(trie.StateTrieID(header.Root), state.Database().TrieDB())
+	tr, err := trie.NewStateTrie(trie.StateTrieID(header.Root), stateDB.(*state.StateDB).Database().TrieDB())
 	if err != nil {
 		return nil, err
 	}
@@ -743,12 +743,12 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address common.Address, st
 	return &AccountResult{
 		Address:      address,
 		AccountProof: accountProof,
-		Balance:      (*hexutil.Big)(state.GetBalance(address)),
+		Balance:      (*hexutil.Big)(stateDB.GetBalance(address)),
 		CodeHash:     codeHash,
-		Nonce:        hexutil.Uint64(state.GetNonce(address)),
+		Nonce:        hexutil.Uint64(stateDB.GetNonce(address)),
 		StorageHash:  storageHash,
 		StorageProof: storageProof,
-	}, state.Error()
+	}, stateDB.Error()
 }
 
 // decodeHash parses a hex-encoded 32-byte hash. The input may optionally
@@ -951,7 +951,7 @@ type OverrideAccount struct {
 type StateOverride map[common.Address]OverrideAccount
 
 // Apply overrides the fields of specified accounts into the given state.
-func (diff *StateOverride) Apply(state *state.StateDB) error {
+func (diff *StateOverride) Apply(state vm.StateDB) error {
 	if diff == nil {
 		return nil
 	}
@@ -1064,7 +1064,7 @@ func (context *ChainContext) GetHeader(hash common.Hash, number uint64) *types.H
 	return header
 }
 
-func doCall(ctx context.Context, b Backend, args TransactionArgs, state *state.StateDB, header *types.Header, overrides *StateOverride, blockOverrides *BlockOverrides, timeout time.Duration, globalGasCap uint64) (*core.ExecutionResult, error) {
+func doCall(ctx context.Context, b Backend, args TransactionArgs, state vm.StateDB, header *types.Header, overrides *StateOverride, blockOverrides *BlockOverrides, timeout time.Duration, globalGasCap uint64) (*core.ExecutionResult, error) {
 	if err := overrides.Apply(state); err != nil {
 		return nil, err
 	}
@@ -1181,7 +1181,7 @@ func (s *BlockChainAPI) Call(ctx context.Context, args TransactionArgs, blockNrO
 // executeEstimate is a helper that executes the transaction under a given gas limit and returns
 // true if the transaction fails for a reason that might be related to not enough gas. A non-nil
 // error means execution failed due to reasons unrelated to the gas limit.
-func executeEstimate(ctx context.Context, b Backend, args TransactionArgs, state *state.StateDB, header *types.Header, gasCap uint64, gasLimit uint64) (bool, *core.ExecutionResult, error) {
+func executeEstimate(ctx context.Context, b Backend, args TransactionArgs, state vm.StateDB, header *types.Header, gasCap uint64, gasLimit uint64) (bool, *core.ExecutionResult, error) {
 	args.Gas = (*hexutil.Uint64)(&gasLimit)
 	result, err := doCall(ctx, b, args, state, header, nil, nil, 0, gasCap)
 	if err != nil {
