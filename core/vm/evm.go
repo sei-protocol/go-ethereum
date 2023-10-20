@@ -137,6 +137,10 @@ func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb StateDB, chainConfig
 	return evm
 }
 
+func (evm *EVM) GetInterpreter() *EVMInterpreter {
+	return evm.interpreter
+}
+
 // Reset resets the EVM with a new transaction context.Reset
 // This is not threadsafe and should only be done very cautiously.
 func (evm *EVM) Reset(txCtx TxContext, statedb StateDB) {
@@ -158,6 +162,10 @@ func (evm *EVM) Cancelled() bool {
 // Interpreter returns the current interpreter
 func (evm *EVM) Interpreter() *EVMInterpreter {
 	return evm.interpreter
+}
+
+func (evm *EVM) SetInterpreter(i *EVMInterpreter) {
+	evm.interpreter = i
 }
 
 // SetBlockContext updates the block context of the EVM.
