@@ -65,7 +65,7 @@ var (
 		"vendor/", "tests/testdata/", "build/",
 
 		// don't relicense vendored sources
-		"cmd/internal/browser",
+		"cmd/lib/browser",
 		"common/bitutil/bitutil",
 		"common/prque/",
 		"consensus/ethash/xor.go",
