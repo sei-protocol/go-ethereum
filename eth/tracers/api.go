@@ -858,7 +858,15 @@ func (api *API) TraceTransaction(ctx context.Context, hash common.Hash, config *
 		TxIndex:     int(index),
 		TxHash:      hash,
 	}
-	return api.traceTx(ctx, msg, txctx, vmctx, statedb, config)
+	res, err := api.traceTx(ctx, msg, txctx, vmctx, statedb, config)
+	var r json.RawMessage
+	resBytes := res.(json.RawMessage)
+	err2 := r.UnmarshalJSON(resBytes)
+	if err2 != nil {
+		panic(err2)
+	}
+	fmt.Println("In go-ethereum's TraceTransaction, res as string = ", string(resBytes))
+	return res, err
 }
 
 // TraceCall lets you trace a given eth_call. It collects the structured logs
