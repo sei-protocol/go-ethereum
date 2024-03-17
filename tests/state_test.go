@@ -41,7 +41,7 @@ import (
 func TestState(t *testing.T) {
 	t.Parallel()
 
-	st := new(testMatcher)
+	st := new(TestMatcher)
 	// Long tests:
 	st.slow(`^stAttackTest/ContractCreationSpam`)
 	st.slow(`^stBadOpcode/badOpcodes`)

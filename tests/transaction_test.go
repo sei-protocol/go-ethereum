@@ -25,7 +25,7 @@ import (
 func TestTransaction(t *testing.T) {
 	t.Parallel()
 
-	txt := new(testMatcher)
+	txt := new(TestMatcher)
 	// These can't be parsed, invalid hex in RLP
 	txt.skipLoad("^ttWrongRLP/.*")
 	// We don't allow more than uint64 in gas amount

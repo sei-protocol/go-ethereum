@@ -88,8 +88,8 @@ func findLine(data []byte, offset int64) (line int) {
 	return
 }
 
-// testMatcher controls skipping and chain config assignment to tests.
-type testMatcher struct {
+// TestMatcher controls skipping and chain config assignment to tests.
+type TestMatcher struct {
 	configpat      []testConfig
 	failpat        []testFailure
 	skiploadpat    []*regexp.Regexp
@@ -108,36 +108,36 @@ type testFailure struct {
 }
 
 // skipShortMode skips tests matching when the -short flag is used.
-func (tm *testMatcher) slow(pattern string) {
+func (tm *TestMatcher) slow(pattern string) {
 	tm.slowpat = append(tm.slowpat, regexp.MustCompile(pattern))
 }
 
 // skipLoad skips JSON loading of tests matching the pattern.
-func (tm *testMatcher) skipLoad(pattern string) {
+func (tm *TestMatcher) skipLoad(pattern string) {
 	tm.skiploadpat = append(tm.skiploadpat, regexp.MustCompile(pattern))
 }
 
 // fails adds an expected failure for tests matching the pattern.
 //
 //nolint:unused
-func (tm *testMatcher) fails(pattern string, reason string) {
+func (tm *TestMatcher) fails(pattern string, reason string) {
 	if reason == "" {
 		panic("empty fail reason")
 	}
 	tm.failpat = append(tm.failpat, testFailure{regexp.MustCompile(pattern), reason})
 }
 
-func (tm *testMatcher) runonly(pattern string) {
+func (tm *TestMatcher) runonly(pattern string) {
 	tm.runonlylistpat = regexp.MustCompile(pattern)
 }
 
 // config defines chain config for tests matching the pattern.
-func (tm *testMatcher) config(pattern string, cfg params.ChainConfig) {
+func (tm *TestMatcher) config(pattern string, cfg params.ChainConfig) {
 	tm.configpat = append(tm.configpat, testConfig{regexp.MustCompile(pattern), cfg})
 }
 
 // findSkip matches name against test skip patterns.
-func (tm *testMatcher) findSkip(name string) (reason string, skipload bool) {
+func (tm *TestMatcher) findSkip(name string) (reason string, skipload bool) {
 	isWin32 := runtime.GOARCH == "386" && runtime.GOOS == "windows"
 	for _, re := range tm.slowpat {
 		if re.MatchString(name) {
@@ -158,7 +158,7 @@ func (tm *testMatcher) findSkip(name string) (reason string, skipload bool) {
 }
 
 // findConfig returns the chain config matching defined patterns.
-func (tm *testMatcher) findConfig(t *testing.T) *params.ChainConfig {
+func (tm *TestMatcher) findConfig(t *testing.T) *params.ChainConfig {
 	for _, m := range tm.configpat {
 		if m.p.MatchString(t.Name()) {
 			return &m.config
@@ -168,7 +168,7 @@ func (tm *testMatcher) findConfig(t *testing.T) *params.ChainConfig {
 }
 
 // checkFailure checks whether a failure is expected.
-func (tm *testMatcher) checkFailure(t *testing.T, err error) error {
+func (tm *TestMatcher) checkFailure(t *testing.T, err error) error {
 	failReason := ""
 	for _, m := range tm.failpat {
 		if m.p.MatchString(t.Name()) {
@@ -191,7 +191,7 @@ func (tm *testMatcher) checkFailure(t *testing.T, err error) error {
 //
 // runTest should be a function of type func(t *testing.T, name string, x <TestType>),
 // where TestType is the type of the test contained in test files.
-func (tm *testMatcher) walk(t *testing.T, dir string, runTest interface{}) {
+func (tm *TestMatcher) walk(t *testing.T, dir string, runTest interface{}) {
 	// Walk the directory.
 	dirinfo, err := os.Stat(dir)
 	if os.IsNotExist(err) || !dirinfo.IsDir() {
@@ -216,7 +216,7 @@ func (tm *testMatcher) walk(t *testing.T, dir string, runTest interface{}) {
 	}
 }
 
-func (tm *testMatcher) runTestFile(t *testing.T, path, name string, runTest interface{}) {
+func (tm *TestMatcher) runTestFile(t *testing.T, path, name string, runTest interface{}) {
 	if r, _ := tm.findSkip(name); r != "" {
 		t.Skip(r)
 	}
@@ -240,6 +240,7 @@ func (tm *testMatcher) runTestFile(t *testing.T, path, name string, runTest inte
 	} else {
 		for _, key := range keys {
 			name := name + "/" + key
+			fmt.Println("name: ", name)
 			t.Run(key, func(t *testing.T) {
 				if r, _ := tm.findSkip(name); r != "" {
 					t.Skip(r)
@@ -281,7 +282,7 @@ func runTestFunc(runTest interface{}, t *testing.T, name string, m reflect.Value
 
 func TestMatcherRunonlylist(t *testing.T) {
 	t.Parallel()
-	tm := new(testMatcher)
+	tm := new(TestMatcher)
 	tm.runonly("invalid*")
 	tm.walk(t, rlpTestDir, func(t *testing.T, name string, test *RLPTest) {
 		if name[:len("invalidRLPTest.json")] != "invalidRLPTest.json" {

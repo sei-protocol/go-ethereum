@@ -48,6 +48,7 @@ var blockTestCommand = &cli.Command{
 }
 
 func blockTestCmd(ctx *cli.Context) error {
+	fmt.Println("In blockTestCmd")
 	if len(ctx.Args().First()) == 0 {
 		return errors.New("path-to-test argument required")
 	}
@@ -83,6 +84,7 @@ func blockTestCmd(ctx *cli.Context) error {
 	}
 	sort.Strings(keys)
 	for _, name := range keys {
+		fmt.Println("In blockTestCmd loop, name:", name)
 		if !re.MatchString(name) {
 			continue
 		}

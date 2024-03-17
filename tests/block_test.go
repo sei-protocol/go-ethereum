@@ -26,11 +26,12 @@ import (
 )
 
 func TestBlockchain(t *testing.T) {
-	bt := new(testMatcher)
+	bt := new(TestMatcher)
 	// General state tests are 'exported' as blockchain tests, but we can run them natively.
 	// For speedier CI-runs, the line below can be uncommented, so those are skipped.
 	// For now, in hardfork-times (Berlin), we run the tests both as StateTests and
 	// as blockchain tests, since the latter also covers things like receipt root
+	bt.runonly(`SimpleTx_*.json`)
 	bt.skipLoad(`^GeneralStateTests/`)
 
 	// Skip random failures due to selfish mining test
@@ -66,14 +67,14 @@ func TestExecutionSpec(t *testing.T) {
 	if !common.FileExist(executionSpecDir) {
 		t.Skipf("directory %s does not exist", executionSpecDir)
 	}
-	bt := new(testMatcher)
+	bt := new(TestMatcher)
 
 	bt.walk(t, executionSpecDir, func(t *testing.T, name string, test *BlockTest) {
 		execBlockTest(t, bt, test)
 	})
 }
 
-func execBlockTest(t *testing.T, bt *testMatcher, test *BlockTest) {
+func execBlockTest(t *testing.T, bt *TestMatcher, test *BlockTest) {
 	if err := bt.checkFailure(t, test.Run(false, rawdb.HashScheme, nil, nil)); err != nil {
 		t.Errorf("test in hash mode without snapshotter failed: %v", err)
 		return

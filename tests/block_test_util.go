@@ -108,6 +108,7 @@ type btHeaderMarshaling struct {
 }
 
 func (t *BlockTest) Run(snapshotter bool, scheme string, tracer vm.EVMLogger, postCheck func(error, *core.BlockChain)) (result error) {
+	// fmt.Println("In BlockTest.Run, snapshotter:", snapshotter, "scheme:", scheme, "tracer:", tracer, "postCheck:", postCheck)
 	config, ok := Forks[t.json.Network]
 	if !ok {
 		return UnsupportedForkError{t.json.Network}
@@ -126,8 +127,10 @@ func (t *BlockTest) Run(snapshotter bool, scheme string, tracer vm.EVMLogger, po
 	}
 	// Commit genesis state
 	gspec := t.genesis(config)
+	// fmt.Println("In BlockTest.Run, creating new database, db:", db, "tconf:", tconf)
 	triedb := trie.NewDatabase(db, tconf)
 	gblock, err := gspec.Commit(db, triedb)
+	// fmt.Println("In BlockTest.Run, gblock:", gblock, "err:", err)
 	if err != nil {
 		return err
 	}
@@ -150,6 +153,7 @@ func (t *BlockTest) Run(snapshotter bool, scheme string, tracer vm.EVMLogger, po
 	chain, err := core.NewBlockChain(db, cache, gspec, nil, engine, vm.Config{
 		Tracer: tracer,
 	}, nil, nil)
+	// fmt.Println("In BlockTest.Run, created chain:", chain, "err:", err)
 	if err != nil {
 		return err
 	}
