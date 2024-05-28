@@ -19,6 +19,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/timer"
 	"math"
 	"math/big"
 
@@ -388,9 +389,12 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	// 6. caller has enough balance to cover asset transfer for **topmost** call
 
 	// Check clauses 1-3, buy gas if everything is correct
+	pt := timer.NewTimer("preCheck")
 	if err := st.preCheck(); err != nil {
+		pt.Stop()
 		return nil, err
 	}
+	pt.Stop()
 
 	var (
 		msg              = st.msg
@@ -400,7 +404,9 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	)
 
 	// Check clauses 4-5, subtract intrinsic gas if everything is correct
+	t := timer.NewTimer("IntrinsicGas")
 	gas, err := IntrinsicGas(msg.Data, msg.AccessList, contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai)
+	t.Stop()
 	if err != nil {
 		return nil, err
 	}
@@ -425,7 +431,10 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	// Execute the preparatory steps for state transition which includes:
 	// - prepare accessList(post-berlin)
 	// - reset transient storage(eip 1153)
+
+	t = timer.NewTimer("st.state.Prepare")
 	st.state.Prepare(rules, msg.From, st.evm.Context.Coinbase, msg.To, vm.ActivePrecompiles(rules), msg.AccessList)
+	t.Stop()
 
 	var (
 		ret   []byte
@@ -435,10 +444,16 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 		ret, _, st.gasRemaining, vmerr = st.evm.Create(sender, msg.Data, st.gasRemaining, msg.Value)
 	} else {
 		// Increment the nonce for the next transaction
+		t = timer.NewTimer("SetNonce")
 		st.state.SetNonce(msg.From, st.state.GetNonce(sender.Address())+1)
+		t.Stop()
+
+		t = timer.NewTimer("Call")
 		ret, st.gasRemaining, vmerr = st.evm.Call(sender, st.to(), msg.Data, st.gasRemaining, msg.Value)
+		t.Stop()
 	}
 
+	t = timer.NewTimer("GasRefund logic")
 	var gasRefund uint64
 	if !rules.IsLondon {
 		// Before EIP-3529: refunds were capped to gasUsed / 2
@@ -451,7 +466,9 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	if rules.IsLondon {
 		effectiveTip = cmath.BigMin(msg.GasTipCap, new(big.Int).Sub(msg.GasFeeCap, st.evm.Context.BaseFee))
 	}
+	t.Stop()
 
+	t = timer.NewTimer("BalanceIncreaseRewardTransactionFee logic")
 	if st.evm.Config.NoBaseFee && msg.GasFeeCap.Sign() == 0 && msg.GasTipCap.Sign() == 0 {
 		// Skip fee payment when NoBaseFee is set and the fee fields
 		// are 0. This avoids a negative effectiveTip being applied to
@@ -461,6 +478,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 		fee.Mul(fee, effectiveTip)
 		st.state.AddBalance(st.evm.Context.Coinbase, fee, tracing.BalanceIncreaseRewardTransactionFee)
 	}
+	t.Stop()
 
 	return &ExecutionResult{
 		UsedGas:     st.gasUsed(),
