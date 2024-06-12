@@ -990,6 +990,9 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 	statedb.SetTxContext(txctx.TxHash, txctx.TxIndex)
 	_, err = core.ApplyTransactionWithEVM(message, api.backend.ChainConfig(), new(core.GasPool).AddGas(message.GasLimit), statedb, vmctx.BlockNumber, txctx.BlockHash, tx, &usedGas, vmenv)
 	if err != nil {
+		if err == core.ErrInsufficientFunds {
+			return []byte("{}"), nil
+		}
 		return nil, fmt.Errorf("tracing failed: %w", err)
 	}
 	return tracer.GetResult()
