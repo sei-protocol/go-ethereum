@@ -79,7 +79,7 @@ func (tx *Transaction) MarshalJSON() ([]byte, error) {
 	enc.Type = hexutil.Uint64(tx.Type())
 
 	// Other fields are set conditionally depending on tx type.
-	switch itx := tx.inner.(type) {
+	switch itx := tx.Inner.(type) {
 	case *LegacyTx:
 		enc.Nonce = (*hexutil.Uint64)(&itx.Nonce)
 		enc.To = tx.To()

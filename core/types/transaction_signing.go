@@ -207,7 +207,7 @@ func (s cancunSigner) Equal(s2 Signer) bool {
 }
 
 func (s cancunSigner) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big.Int, err error) {
-	txdata, ok := tx.inner.(*BlobTx)
+	txdata, ok := tx.Inner.(*BlobTx)
 	if !ok {
 		return s.londonSigner.SignatureValues(tx, sig)
 	}
@@ -275,7 +275,7 @@ func (s londonSigner) Equal(s2 Signer) bool {
 }
 
 func (s londonSigner) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big.Int, err error) {
-	txdata, ok := tx.inner.(*DynamicFeeTx)
+	txdata, ok := tx.Inner.(*DynamicFeeTx)
 	if !ok {
 		return s.eip2930Signer.SignatureValues(tx, sig)
 	}
@@ -346,7 +346,7 @@ func (s eip2930Signer) Sender(tx *Transaction) (common.Address, error) {
 }
 
 func (s eip2930Signer) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big.Int, err error) {
-	switch txdata := tx.inner.(type) {
+	switch txdata := tx.Inner.(type) {
 	case *LegacyTx:
 		return s.EIP155Signer.SignatureValues(tx, sig)
 	case *AccessListTx:
