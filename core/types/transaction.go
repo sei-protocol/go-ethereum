@@ -52,7 +52,7 @@ const (
 
 // Transaction is an Ethereum transaction.
 type Transaction struct {
-	inner TxData    // Consensus contents of a transaction
+	Inner TxData    // Consensus contents of a transaction
 	time  time.Time // Time first seen locally (spam avoidance)
 
 	// caches
@@ -104,7 +104,7 @@ type TxData interface {
 // EncodeRLP implements rlp.Encoder
 func (tx *Transaction) EncodeRLP(w io.Writer) error {
 	if tx.Type() == LegacyTxType {
-		return rlp.Encode(w, tx.inner)
+		return rlp.Encode(w, tx.Inner)
 	}
 	// It's an EIP-2718 typed TX envelope.
 	buf := encodeBufferPool.Get().(*bytes.Buffer)
@@ -119,7 +119,7 @@ func (tx *Transaction) EncodeRLP(w io.Writer) error {
 // encodeTyped writes the canonical encoding of a typed transaction to w.
 func (tx *Transaction) encodeTyped(w *bytes.Buffer) error {
 	w.WriteByte(tx.Type())
-	return tx.inner.encode(w)
+	return tx.Inner.encode(w)
 }
 
 // MarshalBinary returns the canonical encoding of the transaction.
@@ -127,7 +127,7 @@ func (tx *Transaction) encodeTyped(w *bytes.Buffer) error {
 // transactions, it returns the type and payload.
 func (tx *Transaction) MarshalBinary() ([]byte, error) {
 	if tx.Type() == LegacyTxType {
-		return rlp.EncodeToBytes(tx.inner)
+		return rlp.EncodeToBytes(tx.Inner)
 	}
 	var buf bytes.Buffer
 	err := tx.encodeTyped(&buf)
@@ -214,7 +214,7 @@ func (tx *Transaction) decodeTyped(b []byte) (TxData, error) {
 
 // setDecoded sets the inner transaction and size after decoding.
 func (tx *Transaction) setDecoded(inner TxData, size uint64) {
-	tx.inner = inner
+	tx.Inner = inner
 	tx.time = time.Now()
 	if size > 0 {
 		tx.size.Store(size)
@@ -258,7 +258,7 @@ func isProtectedV(V *big.Int) bool {
 
 // Protected says whether the transaction is replay-protected.
 func (tx *Transaction) Protected() bool {
-	switch tx := tx.inner.(type) {
+	switch tx := tx.Inner.(type) {
 	case *LegacyTx:
 		return tx.V != nil && isProtectedV(tx.V)
 	default:
@@ -268,44 +268,44 @@ func (tx *Transaction) Protected() bool {
 
 // Type returns the transaction type.
 func (tx *Transaction) Type() uint8 {
-	return tx.inner.txType()
+	return tx.Inner.txType()
 }
 
 // ChainId returns the EIP155 chain ID of the transaction. The return value will always be
 // non-nil. For legacy transactions which are not replay-protected, the return value is
 // zero.
 func (tx *Transaction) ChainId() *big.Int {
-	return tx.inner.chainID()
+	return tx.Inner.chainID()
 }
 
 // Data returns the input data of the transaction.
-func (tx *Transaction) Data() []byte { return tx.inner.data() }
+func (tx *Transaction) Data() []byte { return tx.Inner.data() }
 
 // AccessList returns the access list of the transaction.
-func (tx *Transaction) AccessList() AccessList { return tx.inner.accessList() }
+func (tx *Transaction) AccessList() AccessList { return tx.Inner.accessList() }
 
 // Gas returns the gas limit of the transaction.
-func (tx *Transaction) Gas() uint64 { return tx.inner.gas() }
+func (tx *Transaction) Gas() uint64 { return tx.Inner.gas() }
 
 // GasPrice returns the gas price of the transaction.
-func (tx *Transaction) GasPrice() *big.Int { return new(big.Int).Set(tx.inner.gasPrice()) }
+func (tx *Transaction) GasPrice() *big.Int { return new(big.Int).Set(tx.Inner.gasPrice()) }
 
 // GasTipCap returns the gasTipCap per gas of the transaction.
-func (tx *Transaction) GasTipCap() *big.Int { return new(big.Int).Set(tx.inner.gasTipCap()) }
+func (tx *Transaction) GasTipCap() *big.Int { return new(big.Int).Set(tx.Inner.gasTipCap()) }
 
 // GasFeeCap returns the fee cap per gas of the transaction.
-func (tx *Transaction) GasFeeCap() *big.Int { return new(big.Int).Set(tx.inner.gasFeeCap()) }
+func (tx *Transaction) GasFeeCap() *big.Int { return new(big.Int).Set(tx.Inner.gasFeeCap()) }
 
 // Value returns the ether amount of the transaction.
-func (tx *Transaction) Value() *big.Int { return new(big.Int).Set(tx.inner.value()) }
+func (tx *Transaction) Value() *big.Int { return new(big.Int).Set(tx.Inner.value()) }
 
 // Nonce returns the sender account nonce of the transaction.
-func (tx *Transaction) Nonce() uint64 { return tx.inner.nonce() }
+func (tx *Transaction) Nonce() uint64 { return tx.Inner.nonce() }
 
 // To returns the recipient address of the transaction.
 // For contract-creation transactions, To returns nil.
 func (tx *Transaction) To() *common.Address {
-	return copyAddressPtr(tx.inner.to())
+	return copyAddressPtr(tx.Inner.to())
 }
 
 // Cost returns (gas * gasPrice) + (blobGas * blobGasPrice) + value.
@@ -321,27 +321,27 @@ func (tx *Transaction) Cost() *big.Int {
 // RawSignatureValues returns the V, R, S signature values of the transaction.
 // The return values should not be modified by the caller.
 func (tx *Transaction) RawSignatureValues() (v, r, s *big.Int) {
-	return tx.inner.rawSignatureValues()
+	return tx.Inner.rawSignatureValues()
 }
 
 // GasFeeCapCmp compares the fee cap of two transactions.
 func (tx *Transaction) GasFeeCapCmp(other *Transaction) int {
-	return tx.inner.gasFeeCap().Cmp(other.inner.gasFeeCap())
+	return tx.Inner.gasFeeCap().Cmp(other.Inner.gasFeeCap())
 }
 
 // GasFeeCapIntCmp compares the fee cap of the transaction against the given fee cap.
 func (tx *Transaction) GasFeeCapIntCmp(other *big.Int) int {
-	return tx.inner.gasFeeCap().Cmp(other)
+	return tx.Inner.gasFeeCap().Cmp(other)
 }
 
 // GasTipCapCmp compares the gasTipCap of two transactions.
 func (tx *Transaction) GasTipCapCmp(other *Transaction) int {
-	return tx.inner.gasTipCap().Cmp(other.inner.gasTipCap())
+	return tx.Inner.gasTipCap().Cmp(other.Inner.gasTipCap())
 }
 
 // GasTipCapIntCmp compares the gasTipCap of the transaction against the given gasTipCap.
 func (tx *Transaction) GasTipCapIntCmp(other *big.Int) int {
-	return tx.inner.gasTipCap().Cmp(other)
+	return tx.Inner.gasTipCap().Cmp(other)
 }
 
 // EffectiveGasTip returns the effective miner gasTipCap for the given base fee.
@@ -384,7 +384,7 @@ func (tx *Transaction) EffectiveGasTipIntCmp(other *big.Int, baseFee *big.Int) i
 
 // BlobGas returns the blob gas limit of the transaction for blob transactions, 0 otherwise.
 func (tx *Transaction) BlobGas() uint64 {
-	if blobtx, ok := tx.inner.(*BlobTx); ok {
+	if blobtx, ok := tx.Inner.(*BlobTx); ok {
 		return blobtx.blobGas()
 	}
 	return 0
@@ -392,7 +392,7 @@ func (tx *Transaction) BlobGas() uint64 {
 
 // BlobGasFeeCap returns the blob gas fee cap per blob gas of the transaction for blob transactions, nil otherwise.
 func (tx *Transaction) BlobGasFeeCap() *big.Int {
-	if blobtx, ok := tx.inner.(*BlobTx); ok {
+	if blobtx, ok := tx.Inner.(*BlobTx); ok {
 		return blobtx.BlobFeeCap.ToBig()
 	}
 	return nil
@@ -400,7 +400,7 @@ func (tx *Transaction) BlobGasFeeCap() *big.Int {
 
 // BlobHashes returns the hashes of the blob commitments for blob transactions, nil otherwise.
 func (tx *Transaction) BlobHashes() []common.Hash {
-	if blobtx, ok := tx.inner.(*BlobTx); ok {
+	if blobtx, ok := tx.Inner.(*BlobTx); ok {
 		return blobtx.BlobHashes
 	}
 	return nil
@@ -408,7 +408,7 @@ func (tx *Transaction) BlobHashes() []common.Hash {
 
 // BlobTxSidecar returns the sidecar of a blob transaction, nil otherwise.
 func (tx *Transaction) BlobTxSidecar() *BlobTxSidecar {
-	if blobtx, ok := tx.inner.(*BlobTx); ok {
+	if blobtx, ok := tx.Inner.(*BlobTx); ok {
 		return blobtx.Sidecar
 	}
 	return nil
@@ -426,12 +426,12 @@ func (tx *Transaction) BlobGasFeeCapIntCmp(other *big.Int) int {
 
 // WithoutBlobTxSidecar returns a copy of tx with the blob sidecar removed.
 func (tx *Transaction) WithoutBlobTxSidecar() *Transaction {
-	blobtx, ok := tx.inner.(*BlobTx)
+	blobtx, ok := tx.Inner.(*BlobTx)
 	if !ok {
 		return tx
 	}
 	cpy := &Transaction{
-		inner: blobtx.withoutSidecar(),
+		Inner: blobtx.withoutSidecar(),
 		time:  tx.time,
 	}
 	// Note: tx.size cache not carried over because the sidecar is included in size!
@@ -465,9 +465,9 @@ func (tx *Transaction) Hash() common.Hash {
 
 	var h common.Hash
 	if tx.Type() == LegacyTxType {
-		h = rlpHash(tx.inner)
+		h = rlpHash(tx.Inner)
 	} else {
-		h = prefixedRlpHash(tx.Type(), tx.inner)
+		h = prefixedRlpHash(tx.Type(), tx.Inner)
 	}
 	tx.hash.Store(h)
 	return h
@@ -481,9 +481,9 @@ func (tx *Transaction) Size() uint64 {
 	}
 
 	// Cache miss, encode and cache.
-	// Note we rely on the assumption that all tx.inner values are RLP-encoded!
+	// Note we rely on the assumption that all tx.Inner values are RLP-encoded!
 	c := writeCounter(0)
-	rlp.Encode(&c, &tx.inner)
+	rlp.Encode(&c, &tx.Inner)
 	size := uint64(c)
 
 	// For blob transactions, add the size of the blob content and the outer list of the
@@ -508,9 +508,9 @@ func (tx *Transaction) WithSignature(signer Signer, sig []byte) (*Transaction, e
 	if err != nil {
 		return nil, err
 	}
-	cpy := tx.inner.copy()
+	cpy := tx.Inner.copy()
 	cpy.setSignatureValues(signer.ChainID(), v, r, s)
-	return &Transaction{inner: cpy, time: tx.time}, nil
+	return &Transaction{Inner: cpy, time: tx.time}, nil
 }
 
 // Transactions implements DerivableList for transactions.
@@ -525,7 +525,7 @@ func (s Transactions) Len() int { return len(s) }
 func (s Transactions) EncodeIndex(i int, w *bytes.Buffer) {
 	tx := s[i]
 	if tx.Type() == LegacyTxType {
-		rlp.Encode(w, tx.inner)
+		rlp.Encode(w, tx.Inner)
 	} else {
 		tx.encodeTyped(w)
 	}
