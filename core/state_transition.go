@@ -459,9 +459,9 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	} else {
 		fee := new(big.Int).SetUint64(st.gasUsed())
 		fee.Mul(fee, effectiveTip)
-		fmt.Println("In TransitionDB, effective tip = ", effectiveTip)
-		fmt.Println("In TransitionDB, fee = ", fee)
-		fmt.Println("In TransitionDB, Coinbase = ", st.evm.Context.Coinbase)
+		// fmt.Println("In TransitionDB, effective tip = ", effectiveTip)
+		// fmt.Println("In TransitionDB, fee = ", fee)
+		// fmt.Println("In TransitionDB, Coinbase = ", st.evm.Context.Coinbase)
 		st.state.AddBalance(st.evm.Context.Coinbase, fee, tracing.BalanceIncreaseRewardTransactionFee)
 	}
 
