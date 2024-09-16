@@ -196,9 +196,6 @@ const (
 	BalanceIncreaseDaoContract BalanceChangeReason = 8
 	// BalanceDecreaseDaoAccount is ether taken from a DAO account to be moved to the refund contract.
 	BalanceDecreaseDaoAccount BalanceChangeReason = 9
-	// BalanceIncreaseBaseFeeToCoinbase - Sei doesn't burn the base fee due to the supply invariant and sends
-	// the base fee to the Coinbase (fee collector) address
-	BalanceIncreaseBaseFeeToCoinbase BalanceChangeReason = 100
 
 	// BalanceChangeTransfer is ether transferred via a call.
 	// it is a decrease for the sender and an increase for the recipient.
