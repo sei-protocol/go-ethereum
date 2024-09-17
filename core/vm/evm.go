@@ -18,7 +18,6 @@ package vm
 
 import (
 	"errors"
-	"fmt"
 	"math/big"
 	"sync/atomic"
 
@@ -311,7 +310,6 @@ func (evm *EVM) CallCode(caller ContractRef, addr common.Address, input []byte, 
 // DelegateCall differs from CallCode in the sense that it executes the given address'
 // code with the caller as context and the caller is set to the caller of the caller.
 func (evm *EVM) DelegateCall(caller ContractRef, addr common.Address, input []byte, gas uint64) (ret []byte, leftOverGas uint64, err error) {
-	fmt.Println("JEREMYDEBUG: In DelegateCall, caller = ", caller.Address(), " addr = ", addr)
 	// Invoke tracer hooks that signal entering/exiting a call frame
 	if evm.Config.Tracer != nil {
 		// NOTE: caller must, at all times be a contract. It should never happen
@@ -334,7 +332,6 @@ func (evm *EVM) DelegateCall(caller ContractRef, addr common.Address, input []by
 		// NOTE: caller must, at all times be a contract. It should never happen
 		// that caller is something other than a Contract.
 		parent := caller.(*Contract)
-		fmt.Println("JEREMYDEBUG: calling precompile contract")
 		ret, gas, err = RunPrecompiledContract(p, evm, parent.CallerAddress, caller.Address(), input, gas, nil, evm.Config.Tracer, evm.interpreter.readOnly, true)
 	} else {
 		addrCopy := addr
@@ -386,7 +383,7 @@ func (evm *EVM) StaticCall(caller ContractRef, addr common.Address, input []byte
 	evm.StateDB.AddBalance(addr, new(big.Int), tracing.BalanceChangeTouchAccount)
 
 	if p, isPrecompile := evm.precompile(addr); isPrecompile {
-		ret, gas, err = RunPrecompiledContract(p, evm, caller.Address(), caller.Address(), input, gas, nil, evm.Config.Tracer, false, false)
+		ret, gas, err = RunPrecompiledContract(p, evm, caller.Address(), caller.Address(), input, gas, nil, evm.Config.Tracer, true, false)
 	} else {
 		// At this point, we use a copy of address. If we don't, the go compiler will
 		// leak the 'contract' to the outer scope, and make allocation for 'contract'
