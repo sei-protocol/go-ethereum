@@ -575,6 +575,7 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 	// Prepare base state
 	parent, err := api.blockByNumberAndHash(ctx, rpc.BlockNumber(block.NumberU64()-1), block.ParentHash())
 	if err != nil {
+		fmt.Println("DEBUG: traceBlock parent error", err)
 		return nil, err
 	}
 	reexec := defaultTraceReexec
@@ -583,6 +584,7 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 	}
 	statedb, release, err := api.backend.StateAtBlock(ctx, parent, reexec, nil, true, false)
 	if err != nil {
+		fmt.Println("DEBUG: traceBlock state error", err)
 		return nil, err
 	}
 	defer release()
@@ -591,7 +593,9 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 	// process that generates states in one thread and traces txes
 	// in separate worker threads.
 	if config != nil && config.Tracer != nil && *config.Tracer != "" {
+		fmt.Println("DEBUG: traceBlock tracer", *config.Tracer)
 		if isJS := DefaultDirectory.IsJS(*config.Tracer); isJS {
+			fmt.Println("DEBUG: traceBlock parallel")
 			return api.traceBlockParallel(ctx, block, statedb, config)
 		}
 	}
@@ -630,6 +634,7 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 // runs along and executes txes without tracing enabled to generate their prestate.
 // Worker threads take the tasks and the prestate and trace them.
 func (api *API) traceBlockParallel(ctx context.Context, block *types.Block, statedb vm.StateDB, config *TraceConfig) ([]*txTraceResult, error) {
+	fmt.Println("DEBUG: traceBlockParallel block", block.NumberU64())
 	// Execute all the transaction contained within the block concurrently
 	var (
 		txs       = block.Transactions()
@@ -676,11 +681,13 @@ func (api *API) traceBlockParallel(ctx context.Context, block *types.Block, stat
 	blockCtx := core.NewEVMBlockContext(block.Header(), api.chainContext(ctx), nil)
 txloop:
 	for i, tx := range txs {
+		fmt.Println("DEBUG: traceBlockParallel tx", tx.Hash())
 		// Send the trace task over for execution
 		task := &txTraceTask{statedb: statedb.Copy().(vm.StateDB), index: i}
 		select {
 		case <-ctx.Done():
 			failed = ctx.Err()
+			fmt.Println("DEBUG: traceBlockParallel ctx.Done(), failed", failed)
 			break txloop
 		case jobs <- task:
 		}
@@ -703,6 +710,7 @@ txloop:
 
 	// If execution failed in between, abort
 	if failed != nil {
+		fmt.Println("DEBUG: traceBlockParallel failed", failed)
 		return nil, failed
 	}
 	return results, nil
