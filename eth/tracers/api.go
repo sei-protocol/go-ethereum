@@ -568,15 +568,12 @@ func (api *API) StandardTraceBadBlockToFile(ctx context.Context, hash common.Has
 // executes all the transactions contained within. The return value will be one item
 // per transaction, dependent on the requested tracer.
 func (api *API) traceBlock(ctx context.Context, block *types.Block, config *TraceConfig) ([]*txTraceResult, error) {
-	fmt.Println("DEBUG: traceBlock 3 block", block.NumberU64())
 	if block.NumberU64() == 0 {
-		fmt.Println("DEBUG: traceBlock genesis is not traceable")
 		return nil, errors.New("genesis is not traceable")
 	}
 	// Prepare base state
 	parent, err := api.blockByNumberAndHash(ctx, rpc.BlockNumber(block.NumberU64()-1), block.ParentHash())
 	if err != nil {
-		fmt.Println("DEBUG: traceBlock parent error", err)
 		return nil, err
 	}
 	reexec := defaultTraceReexec
@@ -585,20 +582,15 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 	}
 	statedb, release, err := api.backend.StateAtBlock(ctx, parent, reexec, nil, true, false)
 	if err != nil {
-		fmt.Println("DEBUG: traceBlock state error", err)
 		return nil, err
 	}
 	defer release()
-
-	fmt.Println("DEBUG: traceBlock got state at block", block.NumberU64())
 
 	// JS tracers have high overhead. In this case run a parallel
 	// process that generates states in one thread and traces txes
 	// in separate worker threads.
 	if config != nil && config.Tracer != nil && *config.Tracer != "" {
-		fmt.Println("DEBUG: traceBlock tracer", *config.Tracer)
 		if isJS := DefaultDirectory.IsJS(*config.Tracer); isJS {
-			fmt.Println("DEBUG: traceBlock parallel")
 			return api.traceBlockParallel(ctx, block, statedb, config)
 		}
 	}
@@ -611,7 +603,6 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 		results   = make([]*txTraceResult, len(txs))
 	)
 	for i, tx := range txs {
-		fmt.Println("DEBUG: traceBlock tx", tx.Hash())
 		// Generate the next state snapshot fast without tracing
 		msg, _ := core.TransactionToMessage(tx, signer, block.BaseFee())
 		txctx := &Context{
@@ -621,16 +612,12 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 			TxHash:      tx.Hash(),
 		}
 		res, err := api.traceTx(ctx, tx, msg, txctx, blockCtx, statedb, config)
-		fmt.Println("DEBUG: traceTx", res, err)
 		if err != nil {
-			fmt.Println("DEBUG: traceTx error", err)
 			results[i] = &txTraceResult{TxHash: tx.Hash(), Error: err.Error()}
 		} else {
-			fmt.Println("DEBUG: traceTx result", res)
 			results[i] = &txTraceResult{TxHash: tx.Hash(), Result: res}
 		}
 	}
-	fmt.Println("DEBUG: traceBlock results", results)
 	return results, nil
 }
 
@@ -638,7 +625,6 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 // runs along and executes txes without tracing enabled to generate their prestate.
 // Worker threads take the tasks and the prestate and trace them.
 func (api *API) traceBlockParallel(ctx context.Context, block *types.Block, statedb vm.StateDB, config *TraceConfig) ([]*txTraceResult, error) {
-	fmt.Println("DEBUG: traceBlockParallel block", block.NumberU64())
 	// Execute all the transaction contained within the block concurrently
 	var (
 		txs       = block.Transactions()
@@ -685,13 +671,11 @@ func (api *API) traceBlockParallel(ctx context.Context, block *types.Block, stat
 	blockCtx := core.NewEVMBlockContext(block.Header(), api.chainContext(ctx), nil)
 txloop:
 	for i, tx := range txs {
-		fmt.Println("DEBUG: traceBlockParallel tx", tx.Hash())
 		// Send the trace task over for execution
 		task := &txTraceTask{statedb: statedb.Copy().(vm.StateDB), index: i}
 		select {
 		case <-ctx.Done():
 			failed = ctx.Err()
-			fmt.Println("DEBUG: traceBlockParallel ctx.Done(), failed", failed)
 			break txloop
 		case jobs <- task:
 		}
@@ -714,7 +698,6 @@ txloop:
 
 	// If execution failed in between, abort
 	if failed != nil {
-		fmt.Println("DEBUG: traceBlockParallel failed", failed)
 		return nil, failed
 	}
 	return results, nil

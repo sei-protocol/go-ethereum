@@ -62,9 +62,7 @@ func (eth *Ethereum) hashState(ctx context.Context, block *types.Block, reexec u
 	// try to construct/recover the state over an ephemeral trie.Database for
 	// isolating the live one.
 	if base != nil {
-		fmt.Println("DEBUG: In hashState, base is not nil")
 		if preferDisk {
-			fmt.Println("DEBUG: In hashState, preferDisk is true")
 			// Create an ephemeral trie.Database for isolating the live one. Otherwise
 			// the internal junks created by tracing will be persisted into the disk.
 			// TODO(rjl493456442), clean cache is disabled to prevent memory leak,
@@ -79,7 +77,6 @@ func (eth *Ethereum) hashState(ctx context.Context, block *types.Block, reexec u
 		statedb, database, triedb, report = base, base.(*state.StateDB).Database(), base.(*state.StateDB).Database().TrieDB(), false
 		current = eth.blockchain.GetBlock(block.ParentHash(), block.NumberU64()-1)
 	} else {
-		fmt.Println("DEBUG: In hashState, base is nil")
 		// Otherwise, try to reexec blocks until we find a state or reach our limit
 		current = block
 
@@ -94,16 +91,13 @@ func (eth *Ethereum) hashState(ctx context.Context, block *types.Block, reexec u
 		// otherwise we would rewind past a persisted block (specific corner case is
 		// chain tracing from the genesis).
 		if !readOnly {
-			fmt.Println("DEBUG: In hashState, readOnly is false")
 			statedb, err = state.New(current.Root(), database, nil)
 			if err == nil {
-				fmt.Println("DEBUG: In hashState, statedb is not nil")
 				return statedb, noopReleaser, nil
 			}
 		}
 		// Database does not have the state for the given block, try to regenerate
 		for i := uint64(0); i < reexec; i++ {
-			fmt.Println("DEBUG: In hashState, reexec loop, i:", i)
 			if err := ctx.Err(); err != nil {
 				return nil, nil, err
 			}
@@ -138,7 +132,6 @@ func (eth *Ethereum) hashState(ctx context.Context, block *types.Block, reexec u
 		parent common.Hash
 	)
 	for current.NumberU64() < origin {
-		fmt.Println("DEBUG: In hashState, for loop, current number:", current.NumberU64())
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
@@ -152,14 +145,12 @@ func (eth *Ethereum) hashState(ctx context.Context, block *types.Block, reexec u
 		if current = eth.blockchain.GetBlockByNumber(next); current == nil {
 			return nil, nil, fmt.Errorf("block #%d not found", next)
 		}
-		fmt.Println("DEBUG: In hashState, for loop, current number:", current.NumberU64())
 		_, _, _, err := eth.blockchain.Processor().Process(current, statedb, vm.Config{})
 		if err != nil {
 			return nil, nil, fmt.Errorf("processing block %d failed: %v", current.NumberU64(), err)
 		}
 		// Finalize the state so any modifications are written to the trie
 		root, err := statedb.Commit(current.NumberU64(), eth.blockchain.Config().IsEIP158(current.Number()))
-		fmt.Println("DEBUG: In hashState, for loop, root:", root.Hex())
 		if err != nil {
 			return nil, nil, fmt.Errorf("stateAtBlock commit failed, number %d root %v: %w",
 				current.NumberU64(), current.Root().Hex(), err)
@@ -180,22 +171,18 @@ func (eth *Ethereum) hashState(ctx context.Context, block *types.Block, reexec u
 		_, nodes, imgs := triedb.Size() // all memory is contained within the nodes return in hashdb
 		log.Info("Historical state regenerated", "block", current.NumberU64(), "elapsed", time.Since(start), "nodes", nodes, "preimages", imgs)
 	}
-	fmt.Println("DEBUG: In hashState, returning statedb")
 	return statedb, func() { triedb.Dereference(block.Root()) }, nil
 }
 
 func (eth *Ethereum) pathState(block *types.Block) (vm.StateDB, func(), error) {
-	fmt.Println("DEBUG: In pathState, block number:", block.NumberU64())
 	// Check if the requested state is available in the live chain.
 	statedb, err := eth.blockchain.StateAt(block.Root())
 	if err == nil {
-		fmt.Println("DEBUG: In pathState, statedb is not nil")
 		return statedb, noopReleaser, nil
 	}
 	// TODO historic state is not supported in path-based scheme.
 	// Fully archive node in pbss will be implemented by relying
 	// on state history, but needs more work on top.
-	fmt.Println("DEBUG: In pathState, returning nil, nil, error")
 	return nil, nil, errors.New("historical state not available in path scheme yet")
 }
 
@@ -222,12 +209,9 @@ func (eth *Ethereum) pathState(block *types.Block) (vm.StateDB, func(), error) {
 //     provided, it would be preferable to start from a fresh state, if we have it
 //     on disk.
 func (eth *Ethereum) stateAtBlock(ctx context.Context, block *types.Block, reexec uint64, base vm.StateDB, readOnly bool, preferDisk bool) (statedb vm.StateDB, release tracers.StateReleaseFunc, err error) {
-	fmt.Println("DEBUG: stateAtBlock, block number:", block.NumberU64())
 	if eth.blockchain.TrieDB().Scheme() == rawdb.HashScheme {
-		fmt.Println("DEBUG: stateAtBlock, using hashState")
 		return eth.hashState(ctx, block, reexec, base, readOnly, preferDisk)
 	}
-	fmt.Println("DEBUG: stateAtBlock, using pathState")
 	return eth.pathState(block)
 }
 
