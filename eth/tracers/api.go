@@ -568,8 +568,9 @@ func (api *API) StandardTraceBadBlockToFile(ctx context.Context, hash common.Has
 // executes all the transactions contained within. The return value will be one item
 // per transaction, dependent on the requested tracer.
 func (api *API) traceBlock(ctx context.Context, block *types.Block, config *TraceConfig) ([]*txTraceResult, error) {
-	fmt.Println("DEBUG: traceBlock 2 block", block.NumberU64())
+	fmt.Println("DEBUG: traceBlock 3 block", block.NumberU64())
 	if block.NumberU64() == 0 {
+		fmt.Println("DEBUG: traceBlock genesis is not traceable")
 		return nil, errors.New("genesis is not traceable")
 	}
 	// Prepare base state
