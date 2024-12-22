@@ -944,7 +944,23 @@ func (api *API) TraceCall(ctx context.Context, args ethapi.TransactionArgs, bloc
 // traceTx configures a new tracer according to the provided configuration, and
 // executes the given message in the provided environment. The return value will
 // be tracer dependent.
-func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *core.Message, txctx *Context, vmctx vm.BlockContext, statedb vm.StateDB, config *TraceConfig) (interface{}, error) {
+func (api *API) traceTx(
+	ctx context.Context,
+	tx *types.Transaction,
+	message *core.Message,
+	txctx *Context,
+	vmctx vm.BlockContext,
+	statedb vm.StateDB,
+	config *TraceConfig,
+) (value interface{}, returnErr error) {
+	// catch panic in defer
+	defer func() {
+		if r := recover(); r != nil {
+			value = nil
+			returnErr = fmt.Errorf("panic in traceTx: %v", r)
+		}
+	}()
+
 	var (
 		tracer  *Tracer
 		err     error
