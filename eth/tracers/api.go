@@ -833,7 +833,7 @@ func (api *API) TraceTransaction(ctx context.Context, hash common.Hash, config *
 	defer func() {
 		if r := recover(); r != nil {
 			value = nil
-			returnErr = fmt.Errorf("panic occured: %v, could not trace tx: %s", r, hash.Hex())
+			returnErr = fmt.Errorf("panic occurred: %v, could not trace tx: %s", r, hash.Hex())
 		}
 	}()
 	tx, blockHash, blockNumber, index, err := api.backend.GetTransaction(ctx, hash)
@@ -886,7 +886,7 @@ func (api *API) TraceCall(ctx context.Context, args ethapi.TransactionArgs, bloc
 	defer func() {
 		if r := recover(); r != nil {
 			value = nil
-			returnErr = fmt.Errorf("panic occured: %v, could not trace tx: %s", r, args.ToTransaction().Hash().Hex())
+			returnErr = fmt.Errorf("panic occurred: %v, could not trace tx: %s", r, args.ToTransaction().Hash().Hex())
 		}
 	}()
 	// Try to retrieve the specified block
@@ -967,7 +967,7 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 	defer func() {
 		if r := recover(); r != nil {
 			value = nil
-			returnErr = fmt.Errorf("panic occured: %v, could not trace tx: %s", r, tx.Hash())
+			returnErr = fmt.Errorf("panic occurred: %v, could not trace tx: %s", r, tx.Hash())
 		}
 	}()
 	if config == nil {
