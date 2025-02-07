@@ -25,8 +25,10 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/internal/ethapi/override"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 )
@@ -37,16 +39,17 @@ import (
 // these together, it would be excessively hard to test. Splitting the parts out
 // allows testing without needing a proper live chain.
 type Options struct {
-	Config *params.ChainConfig // Chain configuration for hard fork selection
-	Chain  core.ChainContext   // Chain context to access past block hashes
-	Header *types.Header       // Header defining the block context to execute in
-	State  vm.StateDB          // Pre-state on top of which to estimate the gas
+	Config         *params.ChainConfig      // Chain configuration for hard fork selection
+	Chain          core.ChainContext        // Chain context to access past block hashes
+	Header         *types.Header            // Header defining the block context to execute in
+	State          *state.StateDB           // Pre-state on top of which to estimate the gas
+	BlockOverrides *override.BlockOverrides // Block overrides to apply during the estimation
 
 	ErrorRatio float64 // Allowed overestimation ratio for faster estimation termination
 }
 
 // Estimate returns the lowest possible gas limit that allows the transaction to
-// run successfully with the provided context optons. It returns an error if the
+// run successfully with the provided context options. It returns an error if the
 // transaction would always revert, or if there are unexpected failures.
 func Estimate(ctx context.Context, call *core.Message, opts *Options, gasCap uint64) (uint64, []byte, error) {
 	// Binary search the gas limit, as it may need to be higher than the amount used
@@ -70,14 +73,24 @@ func Estimate(ctx context.Context, call *core.Message, opts *Options, gasCap uin
 	}
 	// Recap the highest gas limit with account's available balance.
 	if feeCap.BitLen() != 0 {
-		balance := opts.State.GetBalance(call.From)
+		balance := opts.State.GetBalance(call.From).ToBig()
 
-		available := new(big.Int).Set(balance)
+		available := balance
 		if call.Value != nil {
 			if call.Value.Cmp(available) >= 0 {
 				return 0, nil, core.ErrInsufficientFundsForTransfer
 			}
 			available.Sub(available, call.Value)
+		}
+		if opts.Config.IsCancun(opts.Header.Number, opts.Header.Time) && len(call.BlobHashes) > 0 {
+			blobGasPerBlob := new(big.Int).SetInt64(params.BlobTxBlobGasPerBlob)
+			blobBalanceUsage := new(big.Int).SetInt64(int64(len(call.BlobHashes)))
+			blobBalanceUsage.Mul(blobBalanceUsage, blobGasPerBlob)
+			blobBalanceUsage.Mul(blobBalanceUsage, call.BlobGasFeeCap)
+			if blobBalanceUsage.Cmp(available) >= 0 {
+				return 0, nil, core.ErrInsufficientFunds
+			}
+			available.Sub(available, blobBalanceUsage)
 		}
 		allowance := new(big.Int).Div(available, feeCap)
 
@@ -184,16 +197,9 @@ func Estimate(ctx context.Context, call *core.Message, opts *Options, gasCap uin
 // returns true if the transaction fails for a reason that might be related to
 // not enough gas. A non-nil error means execution failed due to reasons unrelated
 // to the gas limit.
-func execute(ctx context.Context, call *core.Message, opts *Options, gasLimit uint64) (failed bool, execResult *core.ExecutionResult, err error) {
+func execute(ctx context.Context, call *core.Message, opts *Options, gasLimit uint64) (bool, *core.ExecutionResult, error) {
 	// Configure the call for this specific execution (and revert the change after)
 	defer func(gas uint64) { call.GasLimit = gas }(call.GasLimit)
-	defer func() {
-		if r := recover(); r != nil {
-			failed = true
-			execResult = nil
-			err = nil
-		}
-	}()
 	call.GasLimit = gasLimit
 
 	// Execute the call and separate execution faults caused by a lack of gas or
@@ -213,13 +219,21 @@ func execute(ctx context.Context, call *core.Message, opts *Options, gasLimit ui
 func run(ctx context.Context, call *core.Message, opts *Options) (*core.ExecutionResult, error) {
 	// Assemble the call and the call context
 	var (
-		msgContext = core.NewEVMTxContext(call)
 		evmContext = core.NewEVMBlockContext(opts.Header, opts.Chain, nil)
-
 		dirtyState = opts.State.Copy()
-		evm        = vm.NewEVM(evmContext, msgContext, dirtyState, opts.Config, vm.Config{NoBaseFee: true})
 	)
-	dirtyState.SetEVM(evm)
+	if opts.BlockOverrides != nil {
+		opts.BlockOverrides.Apply(&evmContext)
+	}
+	// Lower the basefee to 0 to avoid breaking EVM
+	// invariants (basefee < feecap).
+	if call.GasPrice.Sign() == 0 {
+		evmContext.BaseFee = new(big.Int)
+	}
+	if call.BlobGasFeeCap != nil && call.BlobGasFeeCap.BitLen() == 0 {
+		evmContext.BlobBaseFee = new(big.Int)
+	}
+	evm := vm.NewEVM(evmContext, dirtyState, opts.Config, vm.Config{NoBaseFee: true})
 
 	// Monitor the outer context and interrupt the EVM upon cancellation. To avoid
 	// a dangling goroutine until the outer estimation finishes, create an internal

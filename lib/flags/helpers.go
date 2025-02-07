@@ -25,7 +25,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/lib/version"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/params"
 	"github.com/mattn/go-isatty"
 	"github.com/urfave/cli/v2"
 )
@@ -39,23 +38,14 @@ func NewApp(usage string) *cli.App {
 	git, _ := version.VCS()
 	app := cli.NewApp()
 	app.EnableBashCompletion = true
-	app.Version = params.VersionWithCommit(git.Commit, git.Date)
+	app.Version = version.WithCommit(git.Commit, git.Date)
 	app.Usage = usage
-	app.Copyright = "Copyright 2013-2023 The go-ethereum Authors"
+	app.Copyright = "Copyright 2013-2025 The go-ethereum Authors"
 	app.Before = func(ctx *cli.Context) error {
 		MigrateGlobalFlags(ctx)
 		return nil
 	}
 	return app
-}
-
-// Merge merges the given flag slices.
-func Merge(groups ...[]cli.Flag) []cli.Flag {
-	var ret []cli.Flag
-	for _, group := range groups {
-		ret = append(ret, group...)
-	}
-	return ret
 }
 
 var migrationApplied = map[*cli.Command]struct{}{}
@@ -105,7 +95,7 @@ func MigrateGlobalFlags(ctx *cli.Context) {
 func doMigrateFlags(ctx *cli.Context) {
 	// Figure out if there are any aliases of commands. If there are, we want
 	// to ignore them when iterating over the flags.
-	var aliases = make(map[string]bool)
+	aliases := make(map[string]bool)
 	for _, fl := range ctx.Command.Flags {
 		for _, alias := range fl.Names()[1:] {
 			aliases[alias] = true
@@ -115,7 +105,7 @@ func doMigrateFlags(ctx *cli.Context) {
 		for _, parent := range ctx.Lineage()[1:] {
 			if parent.IsSet(name) {
 				// When iterating across the lineage, we will be served both
-				// the 'canon' and alias formats of all commmands. In most cases,
+				// the 'canon' and alias formats of all commands. In most cases,
 				// it's fine to set it in the ctx multiple times (one for each
 				// name), however, the Slice-flags are not fine.
 				// The slice-flags accumulate, so if we set it once as
@@ -239,13 +229,22 @@ func AutoEnvVars(flags []cli.Flag, prefix string) {
 		case *cli.StringFlag:
 			flag.EnvVars = append(flag.EnvVars, envvar)
 
+		case *cli.StringSliceFlag:
+			flag.EnvVars = append(flag.EnvVars, envvar)
+
 		case *cli.BoolFlag:
 			flag.EnvVars = append(flag.EnvVars, envvar)
 
 		case *cli.IntFlag:
 			flag.EnvVars = append(flag.EnvVars, envvar)
 
+		case *cli.Int64Flag:
+			flag.EnvVars = append(flag.EnvVars, envvar)
+
 		case *cli.Uint64Flag:
+			flag.EnvVars = append(flag.EnvVars, envvar)
+
+		case *cli.Float64Flag:
 			flag.EnvVars = append(flag.EnvVars, envvar)
 
 		case *cli.DurationFlag:
@@ -255,9 +254,6 @@ func AutoEnvVars(flags []cli.Flag, prefix string) {
 			flag.EnvVars = append(flag.EnvVars, envvar)
 
 		case *BigFlag:
-			flag.EnvVars = append(flag.EnvVars, envvar)
-
-		case *TextMarshalerFlag:
 			flag.EnvVars = append(flag.EnvVars, envvar)
 
 		case *DirectoryFlag:
