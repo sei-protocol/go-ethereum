@@ -604,6 +604,8 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, metadata []t
 	}
 	defer release()
 
+	return api.traceBlockParallel(ctx, block, statedb, config)
+
 	// Sei doesn't store beacon root and stores parent block hash differently.
 	//
 	// blockCtx := core.NewEVMBlockContext(block.Header(), api.chainContext(ctx), nil)
@@ -618,67 +620,68 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, metadata []t
 	// JS tracers have high overhead. In this case run a parallel
 	// process that generates states in one thread and traces txes
 	// in separate worker threads.
-	if config != nil && config.Tracer != nil && *config.Tracer != "" {
-		if isJS := DefaultDirectory.IsJS(*config.Tracer); isJS {
-			return api.traceBlockParallel(ctx, block, statedb, config)
-		}
-	}
-	// Native tracers have low overhead
-	blockCtx, err := api.backend.GetBlockContext(ctx, block, statedb, api.backend)
-	if err != nil {
-		return nil, fmt.Errorf("cannot get block context: %w", err)
-	}
-	var (
-		txs       = block.Transactions()
-		blockHash = block.Hash()
-		signer    = types.MakeSigner(api.backend.ChainConfig(), block.Number(), block.Time())
-		results   = make([]*TxTraceResult, len(txs))
-	)
-	if len(metadata) == 0 {
-		for i, tx := range txs {
-			// Generate the next state snapshot fast without tracing
-			msg, _ := core.TransactionToMessage(tx, signer, block.BaseFee())
-			txctx := &Context{
-				BlockHash:   blockHash,
-				BlockNumber: block.Number(),
-				TxIndex:     i,
-				TxHash:      tx.Hash(),
-			}
-			res, err := api.traceTx(ctx, tx, msg, txctx, blockCtx, statedb, config, nil)
-			if err != nil {
-				results[i] = &TxTraceResult{TxHash: tx.Hash(), Error: err.Error()}
-			} else {
-				results[i] = &TxTraceResult{TxHash: tx.Hash(), Result: res}
-			}
-		}
-		return results, nil
-	}
-	for _, md := range metadata {
-		if md.ShouldIncludeInTraceResult {
-			i := md.IdxInEthBlock
-			tx := txs[i]
-			// Generate the next state snapshot fast without tracing
-			msg, _ := core.TransactionToMessage(tx, signer, block.BaseFee())
-			txctx := &Context{
-				BlockHash:   blockHash,
-				BlockNumber: block.Number(),
-				TxIndex:     i,
-				TxHash:      tx.Hash(),
-			}
-			res, err := api.traceTx(ctx, tx, msg, txctx, blockCtx, statedb, config, nil)
-			if err != nil {
-				results[i] = &TxTraceResult{TxHash: tx.Hash(), Error: err.Error()}
-				statedb.RevertToSnapshot(0)
-			} else {
-				results[i] = &TxTraceResult{TxHash: tx.Hash(), Result: res}
-			}
-		} else {
-			// should not be included in result but still needs to be run because
-			// these txs may affect cumulative state
-			md.TraceRunnable(statedb)
-		}
-	}
-	return results, nil
+	//
+	//if config != nil && config.Tracer != nil && *config.Tracer != "" {
+	//	if isJS := DefaultDirectory.IsJS(*config.Tracer); isJS {
+	//		return api.traceBlockParallel(ctx, block, statedb, config)
+	//	}
+	//}
+	//// Native tracers have low overhead
+	//blockCtx, err := api.backend.GetBlockContext(ctx, block, statedb, api.backend)
+	//if err != nil {
+	//	return nil, fmt.Errorf("cannot get block context: %w", err)
+	//}
+	//var (
+	//	txs       = block.Transactions()
+	//	blockHash = block.Hash()
+	//	signer    = types.MakeSigner(api.backend.ChainConfig(), block.Number(), block.Time())
+	//	results   = make([]*TxTraceResult, len(txs))
+	//)
+	//if len(metadata) == 0 {
+	//	for i, tx := range txs {
+	//		// Generate the next state snapshot fast without tracing
+	//		msg, _ := core.TransactionToMessage(tx, signer, block.BaseFee())
+	//		txctx := &Context{
+	//			BlockHash:   blockHash,
+	//			BlockNumber: block.Number(),
+	//			TxIndex:     i,
+	//			TxHash:      tx.Hash(),
+	//		}
+	//		res, err := api.traceTx(ctx, tx, msg, txctx, blockCtx, statedb, config, nil)
+	//		if err != nil {
+	//			results[i] = &TxTraceResult{TxHash: tx.Hash(), Error: err.Error()}
+	//		} else {
+	//			results[i] = &TxTraceResult{TxHash: tx.Hash(), Result: res}
+	//		}
+	//	}
+	//	return results, nil
+	//}
+	//for _, md := range metadata {
+	//	if md.ShouldIncludeInTraceResult {
+	//		i := md.IdxInEthBlock
+	//		tx := txs[i]
+	//		// Generate the next state snapshot fast without tracing
+	//		msg, _ := core.TransactionToMessage(tx, signer, block.BaseFee())
+	//		txctx := &Context{
+	//			BlockHash:   blockHash,
+	//			BlockNumber: block.Number(),
+	//			TxIndex:     i,
+	//			TxHash:      tx.Hash(),
+	//		}
+	//		res, err := api.traceTx(ctx, tx, msg, txctx, blockCtx, statedb, config, nil)
+	//		if err != nil {
+	//			results[i] = &TxTraceResult{TxHash: tx.Hash(), Error: err.Error()}
+	//			statedb.RevertToSnapshot(0)
+	//		} else {
+	//			results[i] = &TxTraceResult{TxHash: tx.Hash(), Result: res}
+	//		}
+	//	} else {
+	//		// should not be included in result but still needs to be run because
+	//		// these txs may affect cumulative state
+	//		md.TraceRunnable(statedb)
+	//	}
+	//}
+	//return results, nil
 }
 
 // traceBlockParallel is for tracers that have a high overhead (read JS tracers). One thread
