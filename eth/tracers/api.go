@@ -615,70 +615,7 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, metadata []t
 	// 	core.ProcessParentBlockHash(block.ParentHash(), evm)
 	// }
 
-	// JS tracers have high overhead. In this case run a parallel
-	// process that generates states in one thread and traces txes
-	// in separate worker threads.
-	if config != nil && config.Tracer != nil && *config.Tracer != "" {
-		if isJS := DefaultDirectory.IsJS(*config.Tracer); isJS {
-			return api.traceBlockParallel(ctx, block, statedb, config)
-		}
-	}
-	// Native tracers have low overhead
-	blockCtx, err := api.backend.GetBlockContext(ctx, block, statedb, api.backend)
-	if err != nil {
-		return nil, fmt.Errorf("cannot get block context: %w", err)
-	}
-	var (
-		txs       = block.Transactions()
-		blockHash = block.Hash()
-		signer    = types.MakeSigner(api.backend.ChainConfig(), block.Number(), block.Time())
-		results   = make([]*TxTraceResult, len(txs))
-	)
-	if len(metadata) == 0 {
-		for i, tx := range txs {
-			// Generate the next state snapshot fast without tracing
-			msg, _ := core.TransactionToMessage(tx, signer, block.BaseFee())
-			txctx := &Context{
-				BlockHash:   blockHash,
-				BlockNumber: block.Number(),
-				TxIndex:     i,
-				TxHash:      tx.Hash(),
-			}
-			res, err := api.traceTx(ctx, tx, msg, txctx, blockCtx, statedb, config, nil)
-			if err != nil {
-				results[i] = &TxTraceResult{TxHash: tx.Hash(), Error: err.Error()}
-			} else {
-				results[i] = &TxTraceResult{TxHash: tx.Hash(), Result: res}
-			}
-		}
-		return results, nil
-	}
-	for _, md := range metadata {
-		if md.ShouldIncludeInTraceResult {
-			i := md.IdxInEthBlock
-			tx := txs[i]
-			// Generate the next state snapshot fast without tracing
-			msg, _ := core.TransactionToMessage(tx, signer, block.BaseFee())
-			txctx := &Context{
-				BlockHash:   blockHash,
-				BlockNumber: block.Number(),
-				TxIndex:     i,
-				TxHash:      tx.Hash(),
-			}
-			res, err := api.traceTx(ctx, tx, msg, txctx, blockCtx, statedb, config, nil)
-			if err != nil {
-				results[i] = &TxTraceResult{TxHash: tx.Hash(), Error: err.Error()}
-				statedb.RevertToSnapshot(0)
-			} else {
-				results[i] = &TxTraceResult{TxHash: tx.Hash(), Result: res}
-			}
-		} else {
-			// should not be included in result but still needs to be run because
-			// these txs may affect cumulative state
-			md.TraceRunnable(statedb)
-		}
-	}
-	return results, nil
+	return api.traceBlockFullyParallel(ctx, block, statedb, config, metadata)
 }
 
 // traceBlockParallel is for tracers that have a high overhead (read JS tracers). One thread
@@ -698,11 +635,20 @@ func (api *API) traceBlockParallel(ctx context.Context, block *types.Block, stat
 		threads = len(txs)
 	}
 	jobs := make(chan *txTraceTask, threads)
+
+	// Get block context and precompiles once
+	blockCtx, err := api.backend.GetBlockContext(ctx, block, statedb, api.backend)
+	if err != nil {
+		return nil, err
+	}
+	precompiles := api.backend.GetCustomPrecompiles(block.Number().Int64())
+
+	// Launch worker goroutines
 	for th := 0; th < threads; th++ {
 		pend.Add(1)
 		go func() {
 			defer pend.Done()
-			// Fetch and execute the next transaction trace tasks
+
 			for task := range jobs {
 				msg, _ := core.TransactionToMessage(txs[task.index], signer, block.BaseFee())
 				txctx := &Context{
@@ -720,7 +666,7 @@ func (api *API) traceBlockParallel(ctx context.Context, block *types.Block, stat
 					results[task.index] = &TxTraceResult{TxHash: txs[task.index].Hash(), Error: err.Error()}
 					continue
 				}
-				res, err := api.traceTx(ctx, txs[task.index], msg, txctx, blockCtx, task.statedb, config, nil)
+				res, err := api.traceTx(ctx, txs[task.index], msg, txctx, blockCtx, task.statedb, config, precompiles)
 				if err != nil {
 					results[task.index] = &TxTraceResult{TxHash: txs[task.index].Hash(), Error: err.Error()}
 					continue
@@ -732,11 +678,7 @@ func (api *API) traceBlockParallel(ctx context.Context, block *types.Block, stat
 
 	// Feed the transactions into the tracers and return
 	var failed error
-	blockCtx, err := api.backend.GetBlockContext(ctx, block, statedb, api.backend)
-	if err != nil {
-		return nil, err
-	}
-	evm := vm.NewEVM(blockCtx, statedb, api.backend.ChainConfig(), vm.Config{}, api.backend.GetCustomPrecompiles(block.Number().Int64()))
+	evm := vm.NewEVM(blockCtx, statedb, api.backend.ChainConfig(), vm.Config{}, precompiles)
 
 txloop:
 	for i, tx := range txs {
@@ -768,6 +710,200 @@ txloop:
 	if failed != nil {
 		return nil, failed
 	}
+	return results, nil
+}
+
+// traceBlockFullyParallel executes all transactions in a block with full parallelization.
+// Unlike traceBlockParallel, this method parallelizes both the state generation and the
+// tracing work, making it suitable for scenarios where maximum performance is needed.
+// All ApplyMessage calls are executed in parallel with isolated state copies.
+// traceBlockFullyParallel executes all transactions in a block with full parallelization.
+// Unlike traceBlockParallel, this method parallelizes both the state generation and the
+// tracing work, making it suitable for scenarios where maximum performance is needed.
+// All ApplyMessage calls are executed in parallel with isolated state copies.
+func (api *API) traceBlockFullyParallel(ctx context.Context, block *types.Block, statedb vm.StateDB, config *TraceConfig, metadata []tracersutils.TraceBlockMetadata) ([]*TxTraceResult, error) {
+	var (
+		txs       = block.Transactions()
+		blockHash = block.Hash()
+		signer    = types.MakeSigner(api.backend.ChainConfig(), block.Number(), block.Time())
+		results   = make([]*TxTraceResult, len(txs))
+		pend      sync.WaitGroup
+	)
+
+	// Get block context and precompiles once
+	blockCtx, err := api.backend.GetBlockContext(ctx, block, statedb, api.backend)
+	if err != nil {
+		return nil, err
+	}
+	precompiles := api.backend.GetCustomPrecompiles(block.Number().Int64())
+
+	// Handle case where no metadata is provided - trace all transactions
+	if len(metadata) == 0 {
+		// Number of worker threads
+		threads := runtime.NumCPU()
+		if threads > len(txs) {
+			threads = len(txs)
+		}
+
+		// Create a channel for transaction indices to process
+		jobs := make(chan int, len(txs))
+
+		// Launch worker goroutines
+		for th := 0; th < threads; th++ {
+			pend.Add(1)
+			go func() {
+				defer pend.Done()
+
+				for txIndex := range jobs {
+					// Create isolated state copy for this transaction
+					isolatedState := statedb.Copy()
+					tx := txs[txIndex]
+
+					// Create isolated EVM for building state
+					evm := vm.NewEVM(blockCtx, isolatedState, api.backend.ChainConfig(), vm.Config{}, precompiles)
+
+					// Process all transactions up to this index to build the correct state
+					for i := 0; i < txIndex; i++ {
+						prevTx := txs[i]
+						prevMsg, _ := core.TransactionToMessage(prevTx, signer, block.BaseFee())
+						isolatedState.SetTxContext(prevTx.Hash(), i)
+
+						if _, err := core.ApplyMessage(evm, prevMsg, new(core.GasPool).AddGas(prevMsg.GasLimit)); err != nil {
+							results[txIndex] = &TxTraceResult{TxHash: tx.Hash(), Error: err.Error()}
+							continue
+						}
+						isolatedState.Finalise(evm.ChainConfig().IsEIP158(block.Number()))
+					}
+
+					// Now trace the actual transaction
+					msg, _ := core.TransactionToMessage(tx, signer, block.BaseFee())
+					txctx := &Context{
+						BlockHash:   blockHash,
+						BlockNumber: block.Number(),
+						TxIndex:     txIndex,
+						TxHash:      tx.Hash(),
+					}
+
+					// Reconstruct the block context for this transaction to avoid concurrent use issues
+					isolatedBlockCtx, err := api.backend.GetBlockContext(ctx, block, isolatedState, api.backend)
+					if err != nil {
+						results[txIndex] = &TxTraceResult{TxHash: tx.Hash(), Error: err.Error()}
+						continue
+					}
+
+					res, err := api.traceTx(ctx, tx, msg, txctx, isolatedBlockCtx, isolatedState, config, precompiles)
+					if err != nil {
+						results[txIndex] = &TxTraceResult{TxHash: tx.Hash(), Error: err.Error()}
+						continue
+					}
+					results[txIndex] = &TxTraceResult{TxHash: tx.Hash(), Result: res}
+				}
+			}()
+		}
+
+		// Queue all transaction indices for processing
+		for i := 0; i < len(txs); i++ {
+			select {
+			case <-ctx.Done():
+				close(jobs)
+				return nil, ctx.Err()
+			case jobs <- i:
+			}
+		}
+		close(jobs)
+
+		// Wait for all workers to complete
+		pend.Wait()
+
+		return results, nil
+	}
+
+	// Handle case where metadata is provided - only trace specific transactions
+	// First, collect indices of transactions that should be traced
+	var traceIndices []int
+	for _, md := range metadata {
+		if md.ShouldIncludeInTraceResult {
+			traceIndices = append(traceIndices, md.IdxInEthBlock)
+		}
+	}
+
+	// Number of worker threads
+	threads := runtime.NumCPU()
+	if threads > len(traceIndices) {
+		threads = len(traceIndices)
+	}
+
+	// Create a channel for transaction indices to process
+	jobs := make(chan int, len(traceIndices))
+
+	// Launch worker goroutines
+	for th := 0; th < threads; th++ {
+		pend.Add(1)
+		go func() {
+			defer pend.Done()
+
+			for txIndex := range jobs {
+				// Create isolated state copy for this transaction
+				isolatedState := statedb.Copy()
+				tx := txs[txIndex]
+
+				// Create isolated EVM for building state
+				evm := vm.NewEVM(blockCtx, isolatedState, api.backend.ChainConfig(), vm.Config{}, precompiles)
+
+				// Process all transactions up to this index to build the correct state
+				// We need to process ALL transactions (including those not traced) to maintain state consistency
+				for i := 0; i < txIndex; i++ {
+					prevTx := txs[i]
+					prevMsg, _ := core.TransactionToMessage(prevTx, signer, block.BaseFee())
+					isolatedState.SetTxContext(prevTx.Hash(), i)
+
+					if _, err := core.ApplyMessage(evm, prevMsg, new(core.GasPool).AddGas(prevMsg.GasLimit)); err != nil {
+						results[txIndex] = &TxTraceResult{TxHash: tx.Hash(), Error: err.Error()}
+						continue
+					}
+					isolatedState.Finalise(evm.ChainConfig().IsEIP158(block.Number()))
+				}
+
+				// Now trace the actual transaction
+				msg, _ := core.TransactionToMessage(tx, signer, block.BaseFee())
+				txctx := &Context{
+					BlockHash:   blockHash,
+					BlockNumber: block.Number(),
+					TxIndex:     txIndex,
+					TxHash:      tx.Hash(),
+				}
+
+				// Reconstruct the block context for this transaction to avoid concurrent use issues
+				isolatedBlockCtx, err := api.backend.GetBlockContext(ctx, block, isolatedState, api.backend)
+				if err != nil {
+					results[txIndex] = &TxTraceResult{TxHash: tx.Hash(), Error: err.Error()}
+					continue
+				}
+
+				res, err := api.traceTx(ctx, tx, msg, txctx, isolatedBlockCtx, isolatedState, config, precompiles)
+				if err != nil {
+					results[txIndex] = &TxTraceResult{TxHash: tx.Hash(), Error: err.Error()}
+					continue
+				}
+				results[txIndex] = &TxTraceResult{TxHash: tx.Hash(), Result: res}
+			}
+		}()
+	}
+
+	// Queue transaction indices that should be traced
+	for _, txIndex := range traceIndices {
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			return nil, ctx.Err()
+		case jobs <- txIndex:
+		}
+	}
+	close(jobs)
+
+	// Wait for all workers to complete
+	pend.Wait()
+
 	return results, nil
 }
 
