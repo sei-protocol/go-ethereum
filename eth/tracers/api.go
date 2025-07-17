@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -1100,10 +1099,6 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 	}
 	_, err = core.ApplyTransactionWithEVM(message, api.backend.ChainConfig(), new(core.GasPool).AddGas(message.GasLimit), statedb, vmctx.BlockNumber, txctx.BlockHash, tx, &usedGas, vmenv)
 	if err != nil {
-		// Due to how our mempool works, a transaction with insufficient funds can be included in a block. For tracing purposes, we should ignore this.
-		if strings.Contains(err.Error(), core.ErrInsufficientFunds.Error()) {
-			return json.RawMessage(`{}`), nil
-		}
 		return nil, fmt.Errorf("tracing failed: %w", err)
 	}
 	return tracer.GetResult()
