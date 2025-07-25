@@ -302,8 +302,8 @@ func TestServerSetReadLimitsField(t *testing.T) {
 	server := NewServer()
 
 	// Test initial default value
-	if server.readerLimit != wsDefaultReadLimit {
-		t.Errorf("expected initial readerLimit to be %d, got %d", wsDefaultReadLimit, server.readerLimit)
+	if server.readLimit != wsDefaultReadLimit {
+		t.Errorf("expected initial readerLimit to be %d, got %d", wsDefaultReadLimit, server.readLimit)
 	}
 
 	// Test setting different values
@@ -311,8 +311,8 @@ func TestServerSetReadLimitsField(t *testing.T) {
 
 	for _, expectedLimit := range testValues {
 		server.SetReadLimits(expectedLimit)
-		if server.readerLimit != expectedLimit {
-			t.Errorf("expected readerLimit to be %d after SetReadLimits, got %d", expectedLimit, server.readerLimit)
+		if server.readLimit != expectedLimit {
+			t.Errorf("expected readerLimit to be %d after SetReadLimits, got %d", expectedLimit, server.readLimit)
 		}
 	}
 }
