@@ -55,6 +55,7 @@ type Server struct {
 	batchItemLimit     int
 	batchResponseLimit int
 	httpBodyLimit      int
+	readLimit          int64
 }
 
 // NewServer creates a new server instance with no registered handlers.
@@ -62,8 +63,9 @@ func NewServer() *Server {
 	server := &Server{
 		idgen:         randomIDGenerator(),
 		codecs:        make(map[ServerCodec]struct{}),
-		httpBodyLimit: defaultBodyLimit,
 		denyList:      make(map[string]struct{}),
+		httpBodyLimit: defaultBodyLimit,
+		readLimit:     wsDefaultReadLimit,
 	}
 	server.run.Store(true)
 	// Register the default service providing meta information about the RPC service such
@@ -89,6 +91,13 @@ func (s *Server) SetBatchLimits(itemLimit, maxResponseSize int) {
 // This method should be called before processing any requests via ServeHTTP.
 func (s *Server) SetHTTPBodyLimit(limit int) {
 	s.httpBodyLimit = limit
+}
+
+// SetReadLimits sets the limit for max message size for Websocket requests.
+//
+// This method should be called before processing any requests via Websocket server.
+func (s *Server) SetReadLimits(limit int64) {
+	s.readLimit = limit
 }
 
 // RegisterName creates a service for the given receiver type under the given name. When no
