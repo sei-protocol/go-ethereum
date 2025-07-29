@@ -205,7 +205,7 @@ func TransactionToMessage(tx *types.Transaction, s types.Signer, baseFee *big.In
 // state and would never be accepted within a block.
 func ApplyMessage(evm *vm.EVM, msg *Message, gp *GasPool) (*ExecutionResult, error) {
 	evm.SetTxContext(NewEVMTxContext(msg))
-	return NewStateTransition(evm, msg, gp, false).Execute()
+	return NewStateTransition(evm, msg, gp, false, true).Execute()
 }
 
 // StateTransition represents a state transition.
@@ -231,23 +231,25 @@ func ApplyMessage(evm *vm.EVM, msg *Message, gp *GasPool) (*ExecutionResult, err
 //  5. Run Script section
 //  6. Derive new state root
 type StateTransition struct {
-	gp           *GasPool
-	msg          *Message
-	gasRemaining uint64
-	initialGas   uint64
-	state        vm.StateDB
-	evm          *vm.EVM
-	feeCharged   bool
+	gp                   *GasPool
+	msg                  *Message
+	gasRemaining         uint64
+	initialGas           uint64
+	state                vm.StateDB
+	evm                  *vm.EVM
+	feeCharged           bool
+	shouldIncrementNonce bool
 }
 
 // NewStateTransition initialises and returns a new state transition object.
-func NewStateTransition(evm *vm.EVM, msg *Message, gp *GasPool, feeCharged bool) *StateTransition {
+func NewStateTransition(evm *vm.EVM, msg *Message, gp *GasPool, feeCharged bool, shouldIncrementNonce bool) *StateTransition {
 	return &StateTransition{
-		gp:         gp,
-		evm:        evm,
-		msg:        msg,
-		state:      evm.StateDB,
-		feeCharged: feeCharged,
+		gp:                   gp,
+		evm:                  evm,
+		msg:                  msg,
+		state:                evm.StateDB,
+		feeCharged:           feeCharged,
+		shouldIncrementNonce: shouldIncrementNonce,
 	}
 }
 
@@ -506,7 +508,9 @@ func (st *StateTransition) Execute() (*ExecutionResult, error) {
 		ret, _, st.gasRemaining, vmerr = st.evm.Create(msg.From, msg.Data, st.gasRemaining, value)
 	} else {
 		// Increment the nonce for the next transaction.
-		st.state.SetNonce(msg.From, st.state.GetNonce(msg.From)+1, tracing.NonceChangeEoACall)
+		if st.shouldIncrementNonce {
+			st.state.SetNonce(msg.From, st.state.GetNonce(msg.From)+1, tracing.NonceChangeEoACall)
+		}
 
 		// Apply EIP-7702 authorizations.
 		if msg.SetCodeAuthorizations != nil {
