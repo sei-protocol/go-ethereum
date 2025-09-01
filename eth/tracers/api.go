@@ -25,6 +25,7 @@ import (
 	"math/big"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -1116,24 +1117,66 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 	}
 	_, err = core.ApplyTransactionWithEVM(message, new(core.GasPool).AddGas(message.GasLimit), statedb, vmctx.BlockNumber, txctx.BlockHash, tx, &usedGas, evm)
 	if err != nil {
-		errTrace := map[string]interface{}{
-			"from":    message.From.Hex(),
-			"gas":     hexutil.Uint64(message.GasLimit),
-			"gasUsed": "0x0",
-			"input":   "0x",
-			"error":   err.Error(),
+		if config.Tracer != nil {
+			switch *config.Tracer {
+			case "callTracer":
+				errTrace := map[string]interface{}{
+					"from":    message.From.Hex(),
+					"gas":     hexutil.Uint64(message.GasLimit),
+					"gasUsed": "0x0",
+					"input":   "0x",
+					"error":   err.Error(),
+				}
+				if message.Value != nil {
+					errTrace["value"] = hexutil.Big(*message.Value)
+				}
+				if message.To != nil {
+					errTrace["to"] = message.To.Hex()
+				}
+				bz, err := json.Marshal(errTrace)
+				if err != nil {
+					return nil, fmt.Errorf("tracing failed: %w", err)
+				}
+				return json.RawMessage(bz), nil
+			case "flatCallTracer":
+				action := map[string]interface{}{
+					"callType": "call",
+					"from":     message.From.Hex(),
+					"gas":      hexutil.Uint64(message.GasLimit),
+					"input":    "0x",
+				}
+				if message.Value != nil {
+					action["value"] = hexutil.Big(*message.Value)
+				}
+				if message.To != nil {
+					action["to"] = message.To.Hex()
+				}
+				errTrace := map[string]interface{}{
+					"action":      action,
+					"blockHash":   txctx.BlockHash,
+					"blockNumber": txctx.BlockNumber,
+					"result": map[string]interface{}{
+						"gasUsed": "0x0",
+						"output":  "0x",
+					},
+					"subtraces":           0,
+					"traceAddress":        []string{},
+					"transactionHash":     tx.Hash(),
+					"transactionPosition": txctx.TxIndex,
+					"error":               err.Error(),
+				}
+				bz, err := json.Marshal(errTrace)
+				if err != nil {
+					return nil, fmt.Errorf("tracing failed: %w", err)
+				}
+				return json.RawMessage(bz), nil
+			}
 		}
-		if message.Value != nil {
-			errTrace["value"] = hexutil.Big(*message.Value)
+		// Due to how our mempool works, a transaction with insufficient funds can be included in a block. For tracing purposes, we should ignore this.
+		if strings.Contains(err.Error(), core.ErrInsufficientFunds.Error()) {
+			return json.RawMessage(`{}`), nil
 		}
-		if message.To != nil {
-			errTrace["to"] = message.To.Hex()
-		}
-		bz, err := json.Marshal(errTrace)
-		if err != nil {
-			return nil, fmt.Errorf("tracing failed: %w", err)
-		}
-		return json.RawMessage(bz), nil
+		return nil, fmt.Errorf("tracing failed: %w", err)
 	}
 	tracerMtx.Lock()
 	res, err := tracer.GetResult()
