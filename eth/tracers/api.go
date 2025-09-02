@@ -1176,7 +1176,7 @@ func errorTrace(err error, tx *types.Transaction, message *core.Message, txctx *
 				"transactionPosition": txctx.TxIndex,
 				"error":               err.Error(),
 			}
-			bz, err := json.Marshal(errTrace)
+			bz, err := json.Marshal([]map[string]interface{}{errTrace})
 			if err != nil {
 				return nil, fmt.Errorf("tracing failed: %w", err)
 			}
