@@ -35,6 +35,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/eth/tracers/logger"
@@ -1059,10 +1060,17 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 		timeout   = defaultTraceTimeout
 		usedGas   uint64
 	)
+	startingNonce := statedb.GetNonce(message.From)
 	defer func() {
 		if r := recover(); r != nil {
 			value = nil
 			returnErr = fmt.Errorf("panic occurred: %v, could not trace tx: %s", r, tx.Hash())
+		}
+		// if nonce isn't bumped because of tracing error, bump it here, as it may be needed
+		// for subsequent transactions in the same block being traced.
+		nonce := statedb.GetNonce(message.From)
+		if nonce == startingNonce {
+			statedb.SetNonce(message.From, nonce+1, tracing.NonceChangeUnspecified)
 		}
 	}()
 	if config == nil {
