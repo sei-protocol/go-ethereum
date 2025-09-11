@@ -380,6 +380,9 @@ var NetworkNames = map[string]string{
 type ChainConfig struct {
 	ChainID *big.Int `json:"chainId"` // chainId identifies the current chain and is used for replay protection
 
+	// Custom gas params for sei-chain
+	SeiSstoreSetGasEIP2200 *uint64 `json:"sstoreSetGasEIP2200,omitempty"` // Once per SSTORE operation from clean zero to non-zero
+
 	HomesteadBlock *big.Int `json:"homesteadBlock,omitempty"` // Homestead switch block (nil = no fork, 0 = already homestead)
 
 	DAOForkBlock   *big.Int `json:"daoForkBlock,omitempty"`   // TheDAO hard-fork switch block (nil = no fork)

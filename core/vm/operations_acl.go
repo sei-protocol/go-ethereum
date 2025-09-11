@@ -18,6 +18,9 @@ package vm
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
@@ -27,6 +30,11 @@ import (
 )
 
 func makeGasSStoreFunc(clearingRefund uint64) gasFunc {
+	// Write to debug log file
+	if f, err := os.OpenFile("jeremydebug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+		fmt.Fprintf(f, "[JEREMYDEBUG %s] In operations_acl.go, makeGasSStoreFunc\n", time.Now().Format("2006-01-02 15:04:05"))
+		f.Close()
+	}
 	return func(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
 		// If we fail the minimum gas availability invariant, fail (0)
 		if contract.Gas <= params.SstoreSentryGasEIP2200 {
@@ -55,6 +63,9 @@ func makeGasSStoreFunc(clearingRefund uint64) gasFunc {
 		original := evm.StateDB.GetCommittedState(contract.Address(), x.Bytes32())
 		if original == current {
 			if original == (common.Hash{}) { // create slot (2.1.1)
+				if evm.chainConfig.SeiSstoreSetGasEIP2200 != nil {
+					return cost + *evm.chainConfig.SeiSstoreSetGasEIP2200, nil
+				}
 				return cost + params.SstoreSetGasEIP2200, nil
 			}
 			if value == (common.Hash{}) { // delete slot (2.1.2b)
@@ -75,6 +86,9 @@ func makeGasSStoreFunc(clearingRefund uint64) gasFunc {
 			if original == (common.Hash{}) { // reset to original inexistent slot (2.2.2.1)
 				// EIP 2200 Original clause:
 				//evm.StateDB.AddRefund(params.SstoreSetGasEIP2200 - params.SloadGasEIP2200)
+				if evm.chainConfig.SeiSstoreSetGasEIP2200 != nil {
+					evm.StateDB.AddRefund(*evm.chainConfig.SeiSstoreSetGasEIP2200 - params.SloadGasEIP2200)
+				}
 				evm.StateDB.AddRefund(params.SstoreSetGasEIP2200 - params.WarmStorageReadCostEIP2929)
 			} else { // reset to original existing slot (2.2.2.2)
 				// EIP 2200 Original clause:
