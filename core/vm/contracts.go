@@ -332,6 +332,7 @@ func (c *DataCopy) Run(_ *EVM, _ common.Address, _ common.Address, in []byte, _ 
 // BigModExp implements a native big integer exponential modular operation.
 type BigModExp struct {
 	Eip2565 bool
+	eip7823 bool
 }
 
 var (
