@@ -1014,8 +1014,7 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 	startingNonce := statedb.GetNonce(message.From)
 	defer func() {
 		if r := recover(); r != nil {
-			value = nil
-			returnErr = fmt.Errorf("panic occurred: %v, could not trace tx: %s", r, tx.Hash())
+			value, returnErr = errorTrace(fmt.Errorf("%s", r), tx, message, txctx, vmctx, config)
 		}
 		// if nonce isn't bumped because of tracing error, bump it here, as it may be needed
 		// for subsequent transactions in the same block being traced.
