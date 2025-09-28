@@ -19,8 +19,6 @@ package vm
 import (
 	"errors"
 	"fmt"
-	"os"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
@@ -184,11 +182,6 @@ func gasSStore(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memorySi
 //				(2.2.2.1.) If original value is 0, add SSTORE_SET_GAS - SLOAD_GAS to refund counter.
 //				(2.2.2.2.) Otherwise, add SSTORE_RESET_GAS - SLOAD_GAS gas to refund counter.
 func gasSStoreEIP2200(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
-	// Write to debug log file
-	if f, err := os.OpenFile("jeremydebug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
-		fmt.Fprintf(f, "[JEREMYDEBUG %s] In gas_table.go, gasSStoreEIP2200\n", time.Now().Format("2006-01-02 15:04:05"))
-		f.Close()
-	}
 	// If we fail the minimum gas availability invariant, fail (0)
 	if contract.Gas <= params.SstoreSentryGasEIP2200 {
 		return 0, errors.New("not enough gas for reentrancy sentry")

@@ -19,9 +19,7 @@ package vm
 import (
 	"fmt"
 	"math"
-	"os"
 	"sort"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
@@ -117,11 +115,6 @@ func opChainID(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]
 
 // enable2200 applies EIP-2200 (Rebalance net-metered SSTORE)
 func enable2200(jt *JumpTable) {
-	// Write to debug log file
-	if f, err := os.OpenFile("jeremydebug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
-		fmt.Fprintf(f, "[JEREMYDEBUG %s] In eips.go, enable2200\n", time.Now().Format("2006-01-02 15:04:05"))
-		f.Close()
-	}
 	jt[SLOAD].constantGas = params.SloadGasEIP2200
 	jt[SSTORE].dynamicGas = gasSStoreEIP2200
 }

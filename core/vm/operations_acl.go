@@ -18,9 +18,6 @@ package vm
 
 import (
 	"errors"
-	"fmt"
-	"os"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
@@ -30,11 +27,6 @@ import (
 )
 
 func makeGasSStoreFunc(clearingRefund uint64) gasFunc {
-	// Write to debug log file
-	if f, err := os.OpenFile("jeremydebug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
-		fmt.Fprintf(f, "[JEREMYDEBUG %s] In operations_acl.go, makeGasSStoreFunc\n", time.Now().Format("2006-01-02 15:04:05"))
-		f.Close()
-	}
 	return func(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
 		// If we fail the minimum gas availability invariant, fail (0)
 		if contract.Gas <= params.SstoreSentryGasEIP2200 {
