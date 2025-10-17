@@ -1206,12 +1206,16 @@ func errorTrace(err error, tx *types.Transaction, message *core.Message, txctx *
 				"gasUsed": "0x0",
 				"input":   "0x",
 				"error":   err.Error(),
+				"type":    "CALL",
 			}
 			if message.Value != nil {
 				errTrace["value"] = hexutil.Big(*message.Value)
 			}
 			if message.To != nil {
 				errTrace["to"] = message.To.Hex()
+			}
+			if message.Data != nil {
+				errTrace["input"] = common.Bytes2Hex(message.Data)
 			}
 			bz, err := json.Marshal(errTrace)
 			if err != nil {
@@ -1230,6 +1234,9 @@ func errorTrace(err error, tx *types.Transaction, message *core.Message, txctx *
 			}
 			if message.To != nil {
 				action["to"] = message.To.Hex()
+			}
+			if message.Data != nil {
+				action["input"] = common.Bytes2Hex(message.Data)
 			}
 			errTrace := map[string]interface{}{
 				"action":      action,
