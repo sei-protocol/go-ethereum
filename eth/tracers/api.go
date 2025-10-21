@@ -1213,6 +1213,8 @@ func errorTrace(err error, tx *types.Transaction, message *core.Message, txctx *
 			}
 			if message.To != nil {
 				errTrace["to"] = message.To.Hex()
+			} else {
+				errTrace["type"] = "CREATE"
 			}
 			if message.Data != nil {
 				errTrace["input"] = common.Bytes2Hex(message.Data)
