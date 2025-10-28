@@ -72,7 +72,10 @@ const (
 	maximumPendingTraceStates = 128
 )
 
-var errTxNotFound = errors.New("transaction not found")
+var (
+	errTxNotFound       = errors.New("transaction not found")
+	errExecutionTimeout = errors.New("execution timeout")
+)
 
 // StateReleaseFunc is used to deallocate resources held by constructing a
 // historical state for tracing purposes.
@@ -1109,7 +1112,7 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 		<-deadlineCtx.Done()
 		if errors.Is(deadlineCtx.Err(), context.DeadlineExceeded) {
 			tracerMtx.Lock()
-			tracer.Stop(errors.New("execution timeout"))
+			tracer.Stop(errExecutionTimeout)
 			tracerMtx.Unlock()
 			// Stop evm execution. Note cancellation is not necessarily immediate.
 			evm.Cancel()
@@ -1129,6 +1132,9 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 	tracerMtx.Lock()
 	res, err := tracer.GetResult()
 	tracerMtx.Unlock()
+	if err == nil && errors.Is(deadlineCtx.Err(), context.DeadlineExceeded) {
+		err = errExecutionTimeout
+	}
 	return res, err
 }
 

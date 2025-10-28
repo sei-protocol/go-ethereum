@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"math/big"
 	"reflect"
+	"strings"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -656,6 +657,49 @@ func TestTraceBlock(t *testing.T) {
 		if string(have) != want {
 			t.Errorf("test %d, result mismatch, have\n%v\n, want\n%v\n", i, string(have), want)
 		}
+	}
+}
+
+func TestTraceBlockTimeoutError(t *testing.T) {
+	t.Parallel()
+
+	accounts := newAccounts(2)
+	genesis := &core.Genesis{
+		Config: params.TestChainConfig,
+		Alloc: types.GenesisAlloc{
+			accounts[0].addr: {Balance: big.NewInt(params.Ether)},
+			accounts[1].addr: {Balance: big.NewInt(params.Ether)},
+		},
+	}
+	signer := types.HomesteadSigner{}
+	backend := newTestBackend(t, 1, genesis, func(i int, b *core.BlockGen) {
+		tx, _ := types.SignTx(types.NewTx(&types.LegacyTx{
+			Nonce:    uint64(i),
+			To:       &accounts[1].addr,
+			Value:    big.NewInt(1),
+			Gas:      params.TxGas,
+			GasPrice: b.BaseFee(),
+		}), signer, accounts[0].key)
+		b.AddTx(tx)
+	})
+	defer backend.chain.Stop()
+	api := NewAPI(backend)
+
+	timeout := "0s"
+	config := &TraceConfig{Timeout: &timeout}
+
+	results, err := api.TraceBlockByNumber(context.Background(), rpc.BlockNumber(1), config)
+	if err != nil {
+		t.Fatalf("TraceBlockByNumber returned unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 trace result, got %d", len(results))
+	}
+	if results[0].Error == "" {
+		t.Fatalf("expected timeout error but trace result was successful")
+	}
+	if !strings.Contains(results[0].Error, "execution timeout") {
+		t.Fatalf("unexpected error message: %v", results[0].Error)
 	}
 }
 
