@@ -206,7 +206,7 @@ func TransactionToMessage(tx *types.Transaction, s types.Signer, baseFee *big.In
 // the gas used (which includes gas refunds) and an error if it failed. An error always
 // indicates a core error meaning that the message would always fail for that particular
 // state and would never be accepted within a block.
-func ApplyMessage(evm *vm.EVM, msg *Message, gp *GasPool) (*ExecutionResult, error) {
+func ApplyMessage(evm EVM, msg *Message, gp *GasPool) (*ExecutionResult, error) {
     evm.SetTxContext(NewEVMTxContext(msg))
     return NewStateTransition(evm, msg, gp, false, true).Execute()
 }
@@ -235,6 +235,7 @@ func ApplyMessage(evm *vm.EVM, msg *Message, gp *GasPool) (*ExecutionResult, err
 //  6. Derive new state root
 
 type EVM interface {
+    SetTxContext(vm.TxContext)
     GetStateDB() vm.StateDB
     ChainConfig() *params.ChainConfig
     GetContext() vm.BlockContext
