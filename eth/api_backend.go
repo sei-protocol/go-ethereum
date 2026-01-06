@@ -56,6 +56,12 @@ func (b *EthAPIBackend) ChainConfig() *params.ChainConfig {
 	return b.eth.blockchain.Config()
 }
 
+// ChainConfigAtHeight returns the chain configuration at a specific block height.
+// For standard Ethereum, the config doesn't change with height, so we return the same config.
+func (b *EthAPIBackend) ChainConfigAtHeight(height int64) *params.ChainConfig {
+	return b.eth.blockchain.Config()
+}
+
 func (b *EthAPIBackend) CurrentBlock() *types.Header {
 	return b.eth.blockchain.CurrentBlock()
 }

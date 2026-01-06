@@ -130,6 +130,11 @@ func (b *testBackend) ChainConfig() *params.ChainConfig {
 	return b.chainConfig
 }
 
+func (b *testBackend) ChainConfigAtHeight(height int64) *params.ChainConfig {
+	// Test backend uses the same config for all heights
+	return b.chainConfig
+}
+
 func (b *testBackend) Engine() consensus.Engine {
 	return b.engine
 }
