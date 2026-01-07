@@ -1232,7 +1232,7 @@ func errorTrace(err error, tx *types.Transaction, message *core.Message, txctx *
 				errTrace["type"] = "CREATE"
 			}
 			if message.Data != nil {
-				errTrace["input"] = common.Bytes2Hex(message.Data)
+				errTrace["input"] = hexutil.Encode(message.Data)
 			}
 			bz, err := json.Marshal(errTrace)
 			if err != nil {
@@ -1253,7 +1253,7 @@ func errorTrace(err error, tx *types.Transaction, message *core.Message, txctx *
 				action["to"] = message.To.Hex()
 			}
 			if message.Data != nil {
-				action["input"] = common.Bytes2Hex(message.Data)
+				action["input"] = hexutil.Encode(message.Data)
 			}
 			errTrace := map[string]interface{}{
 				"action":      action,
