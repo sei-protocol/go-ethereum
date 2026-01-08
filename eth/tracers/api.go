@@ -91,6 +91,7 @@ type Backend interface {
 	GetTransaction(ctx context.Context, txHash common.Hash) (bool, *types.Transaction, common.Hash, uint64, uint64, error)
 	RPCGasCap() uint64
 	ChainConfig() *params.ChainConfig
+	ChainConfigAtHeight(height int64) *params.ChainConfig
 	Engine() consensus.Engine
 	ChainDb() ethdb.Database
 	StateAtBlock(ctx context.Context, block *types.Block, reexec uint64, base vm.StateDB, readOnly bool, preferDisk bool) (vm.StateDB, StateReleaseFunc, error)
@@ -389,12 +390,13 @@ func (api *API) traceChain(start, end *types.Block, config *TraceConfig, closed 
 			// Insert block's parent beacon block root in the state
 			// as per EIP-4788.
 			context := core.NewEVMBlockContext(next.Header(), api.chainContext(ctx), nil)
-			evm := vm.NewEVM(context, statedb, api.backend.ChainConfig(), vm.Config{}, api.backend.GetCustomPrecompiles(block.Number().Int64()))
+			// Use height-aware chain config for correct gas params at historical blocks
+			evm := vm.NewEVM(context, statedb, api.backend.ChainConfigAtHeight(next.Number().Int64()), vm.Config{}, api.backend.GetCustomPrecompiles(block.Number().Int64()))
 			if beaconRoot := next.BeaconRoot(); beaconRoot != nil {
 				core.ProcessBeaconBlockRoot(*beaconRoot, evm)
 			}
 			// Insert parent hash in history contract.
-			if api.backend.ChainConfig().IsPrague(next.Number(), next.Time()) {
+			if api.backend.ChainConfigAtHeight(next.Number().Int64()).IsPrague(next.Number(), next.Time()) {
 				core.ProcessParentBlockHash(next.ParentHash(), evm)
 			}
 			// Clean out any pending release functions of trace state. Note this
@@ -539,9 +541,10 @@ func (api *API) IntermediateRoots(ctx context.Context, hash common.Hash, config 
 	}
 	defer release()
 	var (
-		roots              []common.Hash
-		signer             = types.MakeSigner(api.backend.ChainConfig(), block.Number(), block.Time())
-		chainConfig        = api.backend.ChainConfig()
+		roots  []common.Hash
+		signer = types.MakeSigner(api.backend.ChainConfig(), block.Number(), block.Time())
+		// Use height-aware chain config for correct gas params at historical blocks
+		chainConfig        = api.backend.ChainConfigAtHeight(block.Number().Int64())
 		vmctx              = core.NewEVMBlockContext(block.Header(), api.chainContext(ctx), nil)
 		deleteEmptyObjects = chainConfig.IsEIP158(block.Number())
 	)
@@ -740,7 +743,8 @@ func (api *API) traceBlockParallel(ctx context.Context, block *types.Block, stat
 	if err != nil {
 		return nil, err
 	}
-	evm := vm.NewEVM(blockCtx, statedb, api.backend.ChainConfig(), vm.Config{}, api.backend.GetCustomPrecompiles(block.Number().Int64()))
+	// Use height-aware chain config for correct gas params at historical blocks
+	evm := vm.NewEVM(blockCtx, statedb, api.backend.ChainConfigAtHeight(block.Number().Int64()), vm.Config{}, api.backend.GetCustomPrecompiles(block.Number().Int64()))
 
 txloop:
 	for i, tx := range txs {
@@ -817,9 +821,10 @@ func (api *API) standardTraceBlockToFile(ctx context.Context, block *types.Block
 		return nil, err
 	}
 	var (
-		dumps       []string
-		signer      = types.MakeSigner(api.backend.ChainConfig(), block.Number(), block.Time())
-		chainConfig = api.backend.ChainConfig()
+		dumps  []string
+		signer = types.MakeSigner(api.backend.ChainConfig(), block.Number(), block.Time())
+		// Use height-aware chain config for correct gas params at historical blocks
+		chainConfig = api.backend.ChainConfigAtHeight(block.Number().Int64())
 		canon       = true
 	)
 	// Check if there are any overrides: the caller may wish to enable a future
@@ -1022,7 +1027,8 @@ func (api *API) TraceCall(ctx context.Context, args ethapi.TransactionArgs, bloc
 		if overrideErr := config.BlockOverrides.Apply(&vmctx); overrideErr != nil {
 			return nil, overrideErr
 		}
-		rules := api.backend.ChainConfig().Rules(vmctx.BlockNumber, vmctx.Random != nil, vmctx.Time)
+		// Use height-aware chain config for correct gas params at historical blocks
+		rules := api.backend.ChainConfigAtHeight(vmctx.BlockNumber.Int64()).Rules(vmctx.BlockNumber, vmctx.Random != nil, vmctx.Time)
 
 		precompiles = vm.ActivePrecompiledContracts(rules, api.backend.GetCustomPrecompiles(block.Number().Int64()))
 		if err := config.StateOverrides.Apply(statedb, precompiles); err != nil {
@@ -1030,6 +1036,7 @@ func (api *API) TraceCall(ctx context.Context, args ethapi.TransactionArgs, bloc
 		}
 	}
 	// Execute the trace
+	// Note: ChainID doesn't change with height, so we can use ChainConfig() here
 	if err := args.CallDefaults(api.backend.RPCGasCap(), vmctx.BaseFee, api.backend.ChainConfig().ChainID); err != nil {
 		return nil, err
 	}
@@ -1087,7 +1094,8 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 			Stop:      logger.Stop,
 		}
 	} else {
-		tracer, err = DefaultDirectory.New(*config.Tracer, txctx, config.TracerConfig, api.backend.ChainConfig())
+		// Use height-aware chain config to get correct SSTORE gas params for historical blocks
+		tracer, err = DefaultDirectory.New(*config.Tracer, txctx, config.TracerConfig, api.backend.ChainConfigAtHeight(vmctx.BlockNumber.Int64()))
 		if err != nil {
 			return nil, err
 		}
@@ -1095,7 +1103,8 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 	tracingStateDB := state.NewHookedState(statedb, tracer.Hooks)
 	tracerMtx = &sync.Mutex{}
 	txCtx := core.NewEVMTxContext(message)
-	evm := vm.NewEVM(vmctx, tracingStateDB, api.backend.ChainConfig(), vm.Config{Tracer: tracer.Hooks, NoBaseFee: true}, api.backend.GetCustomPrecompiles(vmctx.BlockNumber.Int64()))
+	// Use height-aware chain config to get correct SSTORE gas params for historical blocks
+	evm := vm.NewEVM(vmctx, tracingStateDB, api.backend.ChainConfigAtHeight(vmctx.BlockNumber.Int64()), vm.Config{Tracer: tracer.Hooks, NoBaseFee: true}, api.backend.GetCustomPrecompiles(vmctx.BlockNumber.Int64()))
 	if precompiles != nil {
 		evm.SetPrecompiles(precompiles)
 	}
@@ -1223,7 +1232,7 @@ func errorTrace(err error, tx *types.Transaction, message *core.Message, txctx *
 				errTrace["type"] = "CREATE"
 			}
 			if message.Data != nil {
-				errTrace["input"] = common.Bytes2Hex(message.Data)
+				errTrace["input"] = hexutil.Encode(message.Data)
 			}
 			bz, err := json.Marshal(errTrace)
 			if err != nil {
@@ -1244,7 +1253,7 @@ func errorTrace(err error, tx *types.Transaction, message *core.Message, txctx *
 				action["to"] = message.To.Hex()
 			}
 			if message.Data != nil {
-				action["input"] = common.Bytes2Hex(message.Data)
+				action["input"] = hexutil.Encode(message.Data)
 			}
 			errTrace := map[string]interface{}{
 				"action":      action,
