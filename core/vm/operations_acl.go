@@ -79,9 +79,10 @@ func makeGasSStoreFunc(clearingRefund uint64) gasFunc {
 				// EIP 2200 Original clause:
 				//evm.StateDB.AddRefund(params.SstoreSetGasEIP2200 - params.SloadGasEIP2200)
 				if evm.chainConfig.SeiSstoreSetGasEIP2200 != nil {
-					evm.StateDB.AddRefund(*evm.chainConfig.SeiSstoreSetGasEIP2200 - params.SloadGasEIP2200)
+					evm.StateDB.AddRefund(*evm.chainConfig.SeiSstoreSetGasEIP2200 - params.WarmStorageReadCostEIP2929)
+				} else {
+					evm.StateDB.AddRefund(params.SstoreSetGasEIP2200 - params.WarmStorageReadCostEIP2929)
 				}
-				evm.StateDB.AddRefund(params.SstoreSetGasEIP2200 - params.WarmStorageReadCostEIP2929)
 			} else { // reset to original existing slot (2.2.2.2)
 				// EIP 2200 Original clause:
 				//	evm.StateDB.AddRefund(params.SstoreResetGasEIP2200 - params.SloadGasEIP2200)
