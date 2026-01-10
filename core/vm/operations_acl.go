@@ -18,6 +18,7 @@ package vm
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
@@ -28,6 +29,7 @@ import (
 
 func makeGasSStoreFunc(clearingRefund uint64) gasFunc {
 	return func(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
+		fmt.Println("[DEBUG] [GETH] makeGasSStoreFunc called")
 		// If we fail the minimum gas availability invariant, fail (0)
 		if contract.Gas <= params.SstoreSentryGasEIP2200 {
 			return 0, errors.New("not enough gas for reentrancy sentry")
@@ -75,13 +77,19 @@ func makeGasSStoreFunc(clearingRefund uint64) gasFunc {
 			}
 		}
 		if original == value {
+			fmt.Println("[DEBUG] [GETH] in original == value")
 			if original == (common.Hash{}) { // reset to original inexistent slot (2.2.2.1)
+				fmt.Println("[DEBUG] [GETH] in original == value and original == (common.Hash{})")
 				// EIP 2200 Original clause:
 				//evm.StateDB.AddRefund(params.SstoreSetGasEIP2200 - params.SloadGasEIP2200)
 				if evm.chainConfig.SeiSstoreSetGasEIP2200 != nil {
+					fmt.Println("[DEBUG] [GETH] in original == value and original == (common.Hash{}) and SeiSstoreSetGasEIP2200 != nil")
 					evm.StateDB.AddRefund(*evm.chainConfig.SeiSstoreSetGasEIP2200 - params.WarmStorageReadCostEIP2929)
+					fmt.Println("[DEBUG] [GETH] added refund of ", *evm.chainConfig.SeiSstoreSetGasEIP2200-params.WarmStorageReadCostEIP2929)
 				} else {
+					fmt.Println("[DEBUG] [GETH] in original == value and original == (common.Hash{}) and SeiSstoreSetGasEIP2200 == nil")
 					evm.StateDB.AddRefund(params.SstoreSetGasEIP2200 - params.WarmStorageReadCostEIP2929)
+					fmt.Println("[DEBUG] [GETH] added refund of ", params.SstoreSetGasEIP2200-params.WarmStorageReadCostEIP2929)
 				}
 			} else { // reset to original existing slot (2.2.2.2)
 				// EIP 2200 Original clause:
