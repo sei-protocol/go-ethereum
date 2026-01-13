@@ -91,7 +91,7 @@ func (ctx *ScopeContext) ContractCode() []byte {
 
 // IEVMInterpreter is the interface for EVM interpreters, allowing custom implementations
 type IEVMInterpreter interface {
-	Run(contract *Contract, input []byte, readOnly bool) ([]byte, error)
+	Run(callOpCode OpCode, contract *Contract, input []byte, readOnly bool) ([]byte, error)
 	ReadOnly() bool
 }
 
@@ -165,7 +165,7 @@ func NewEVMInterpreter(evm *EVM) *EVMInterpreter {
 // It's important to note that any errors returned by the interpreter should be
 // considered a revert-and-consume-all-gas operation except for
 // ErrExecutionReverted which means revert-and-keep-gas-left.
-func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (ret []byte, err error) {
+func (in *EVMInterpreter) Run(_ OpCode, contract *Contract, input []byte, readOnly bool) (ret []byte, err error) {
 	// Increment the call depth which is restricted to 1024
 	in.evm.Depth++
 	defer func() { in.evm.Depth-- }()

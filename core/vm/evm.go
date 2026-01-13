@@ -252,7 +252,7 @@ func (evm *EVM) Call(caller common.Address, addr common.Address, input []byte, g
 			contract := NewContract(caller, addr, value, gas, evm.jumpDests)
 			contract.IsSystemCall = isSystemCall(caller)
 			contract.SetCallCode(evm.resolveCodeHash(addr), code)
-			ret, err = evm.EVMInterpreter.Run(contract, input, false)
+			ret, err = evm.EVMInterpreter.Run(CALL, contract, input, false)
 			gas = contract.Gas
 		}
 	}
@@ -311,7 +311,7 @@ func (evm *EVM) CallCode(caller common.Address, addr common.Address, input []byt
 		// The contract is a scoped environment for this execution context only.
 		contract := NewContract(caller, caller, value, gas, evm.jumpDests)
 		contract.SetCallCode(evm.resolveCodeHash(addr), evm.resolveCode(addr))
-		ret, err = evm.EVMInterpreter.Run(contract, input, false)
+		ret, err = evm.EVMInterpreter.Run(CALLCODE, contract, input, false)
 		gas = contract.Gas
 	}
 	if err != nil {
@@ -357,7 +357,7 @@ func (evm *EVM) DelegateCall(originCaller common.Address, caller common.Address,
 		// Note: The value refers to the original value from the parent call.
 		contract := NewContract(originCaller, caller, value, gas, evm.jumpDests)
 		contract.SetCallCode(evm.resolveCodeHash(addr), evm.resolveCode(addr))
-		ret, err = evm.EVMInterpreter.Run(contract, input, false)
+		ret, err = evm.EVMInterpreter.Run(DELEGATECALL, contract, input, false)
 		gas = contract.Gas
 	}
 	if err != nil {
@@ -412,7 +412,7 @@ func (evm *EVM) StaticCall(caller common.Address, addr common.Address, input []b
 		// When an error was returned by the EVM or when setting the creation code
 		// above we revert to the snapshot and consume any gas remaining. Additionally
 		// when we're in Homestead this also counts for code storage gas errors.
-		ret, err = evm.EVMInterpreter.Run(contract, input, true)
+		ret, err = evm.EVMInterpreter.Run(STATICCALL, contract, input, true)
 		gas = contract.Gas
 	}
 	if err != nil {
@@ -533,7 +533,7 @@ func (evm *EVM) create(caller common.Address, code []byte, gas uint64, value *ui
 // initNewContract runs a new contract's creation code, performs checks on the
 // resulting code that is to be deployed, and consumes necessary gas.
 func (evm *EVM) initNewContract(contract *Contract, address common.Address) ([]byte, error) {
-	ret, err := evm.EVMInterpreter.Run(contract, nil, false)
+	ret, err := evm.EVMInterpreter.Run(CREATE, contract, nil, false)
 	if err != nil {
 		return ret, err
 	}
@@ -616,7 +616,7 @@ func (evm *EVM) CreateWithAddress(caller common.Address, code []byte, gas uint64
 func (evm *EVM) GetDeploymentCode(caller common.Address, code []byte, gas uint64, value *big.Int, address common.Address) ([]byte, uint64, error) {
 	contract := NewContract(caller, address, uint256.MustFromBig(value), gas, map[common.Hash]Bitvec{})
 	contract.SetCallCode(crypto.Keccak256Hash(code), code)
-	ret, err := evm.EVMInterpreter.Run(contract, nil, false)
+	ret, err := evm.EVMInterpreter.Run(CREATE2, contract, nil, false)
 	// Check whether the max code size has been exceeded, assign err if the case.
 	if err == nil && evm.chainRules.IsEIP158 && len(ret) > params.MaxCodeSize {
 		err = ErrMaxCodeSizeExceeded
