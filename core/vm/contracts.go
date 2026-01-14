@@ -229,8 +229,8 @@ func ActivePrecompiles(rules params.Rules) []common.Address {
 // - the _remaining_ gas,
 // - any error that occurred
 func RunPrecompiledContract(p PrecompiledContract, evm *EVM, sender common.Address, callingContract common.Address, input []byte, suppliedGas uint64, value *big.Int, logger *tracing.Hooks, readOnly bool, isFromDelegateCall bool) (ret []byte, remainingGas uint64, err error) {
-	evm.depth++
-	defer func() { evm.depth-- }()
+	evm.Depth++
+	defer func() { evm.Depth-- }()
 	if dp, ok := p.(DynamicGasPrecompiledContract); ok {
 		return dp.RunAndCalculateGas(evm, sender, callingContract, input, suppliedGas, value, logger, readOnly, isFromDelegateCall)
 	}
