@@ -256,6 +256,11 @@ func (evm *EVM) Call(caller common.Address, addr common.Address, input []byte, g
 			gas = contract.Gas
 		}
 	}
+	// Check if this is an abort error that should propagate through the call stack
+	if abortErr, ok := err.(AbortError); ok && abortErr.IsAbortError() {
+		return ret, gas, abortErr
+	}
+	
 	// When an error was returned by the EVM or when setting the creation code
 	// above we revert to the snapshot and consume any gas remaining. Additionally,
 	// when we're in homestead this also counts for code storage gas errors.
@@ -314,6 +319,11 @@ func (evm *EVM) CallCode(caller common.Address, addr common.Address, input []byt
 		ret, err = evm.EVMInterpreter.Run(CALLCODE, contract, input, false)
 		gas = contract.Gas
 	}
+	// Check if this is an abort error that should propagate through the call stack
+	if abortErr, ok := err.(AbortError); ok && abortErr.IsAbortError() {
+		return ret, gas, abortErr
+	}
+
 	if err != nil {
 		evm.StateDB.RevertToSnapshot(snapshot)
 		if err != ErrExecutionReverted {
@@ -359,6 +369,10 @@ func (evm *EVM) DelegateCall(originCaller common.Address, caller common.Address,
 		contract.SetCallCode(evm.resolveCodeHash(addr), evm.resolveCode(addr))
 		ret, err = evm.EVMInterpreter.Run(DELEGATECALL, contract, input, false)
 		gas = contract.Gas
+	}
+	// Check if this is an abort error that should propagate through the call stack
+	if abortErr, ok := err.(AbortError); ok && abortErr.IsAbortError() {
+		return ret, gas, abortErr
 	}
 	if err != nil {
 		evm.StateDB.RevertToSnapshot(snapshot)
@@ -414,6 +428,10 @@ func (evm *EVM) StaticCall(caller common.Address, addr common.Address, input []b
 		// when we're in Homestead this also counts for code storage gas errors.
 		ret, err = evm.EVMInterpreter.Run(STATICCALL, contract, input, true)
 		gas = contract.Gas
+	}
+	// Check if this is an abort error that should propagate through the call stack
+	if abortErr, ok := err.(AbortError); ok && abortErr.IsAbortError() {
+		return ret, gas, abortErr
 	}
 	if err != nil {
 		evm.StateDB.RevertToSnapshot(snapshot)
