@@ -756,6 +756,9 @@ func opCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byt
 		gas += params.CallStipend
 	}
 	ret, returnGas, err := interpreter.evm.Call(scope.Contract.Address(), toAddr, args, gas, &value)
+	if abortErr, ok := err.(AbortError); ok && abortErr.IsAbortError() {
+		return ret, abortErr
+	}
 
 	if err != nil {
 		temp.Clear()
@@ -790,6 +793,10 @@ func opCallCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 	}
 
 	ret, returnGas, err := interpreter.evm.CallCode(scope.Contract.Address(), toAddr, args, gas, &value)
+	if abortErr, ok := err.(AbortError); ok && abortErr.IsAbortError() {
+		return ret, abortErr
+	}
+
 	if err != nil {
 		temp.Clear()
 	} else {
@@ -819,6 +826,10 @@ func opDelegateCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext
 	args := scope.Memory.GetPtr(inOffset.Uint64(), inSize.Uint64())
 
 	ret, returnGas, err := interpreter.evm.DelegateCall(scope.Contract.Caller(), scope.Contract.Address(), toAddr, args, gas, scope.Contract.value)
+	if abortErr, ok := err.(AbortError); ok && abortErr.IsAbortError() {
+		return ret, abortErr
+	}
+
 	if err != nil {
 		temp.Clear()
 	} else {
@@ -848,6 +859,9 @@ func opStaticCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) 
 	args := scope.Memory.GetPtr(inOffset.Uint64(), inSize.Uint64())
 
 	ret, returnGas, err := interpreter.evm.StaticCall(scope.Contract.Address(), toAddr, args, gas)
+	if abortErr, ok := err.(AbortError); ok && abortErr.IsAbortError() {
+		return ret, abortErr
+	}
 	if err != nil {
 		temp.Clear()
 	} else {

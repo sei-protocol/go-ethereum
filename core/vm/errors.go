@@ -44,6 +44,13 @@ var (
 	errStopToken = errors.New("stop token")
 )
 
+// AbortError is an interface that errors can implement to signal that execution
+// should be aborted immediately and the error should propagate through the call stack.
+type AbortError interface {
+	error
+	IsAbortError() bool
+}
+
 // ErrStackUnderflow wraps an evm error when the items on the stack less
 // than the minimal requirement.
 type ErrStackUnderflow struct {
