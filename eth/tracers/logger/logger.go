@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"math/big"
 	"strings"
 	"sync/atomic"
@@ -39,6 +38,13 @@ import (
 
 // Storage represents a contract's storage.
 type Storage map[common.Hash]common.Hash
+
+// DefaultResultSizeLimit is the maximum bytes of JSON output the struct logger
+// will buffer before it stops recording new entries. This prevents unbounded
+// memory growth from storage-heavy traces (e.g. tight SLOAD loops).
+// Callers can override via Config.Limit. 128 MB covers all legitimate traces
+// while capping the damage from adversarial inputs.
+const DefaultResultSizeLimit = 128 * 1024 * 1024
 
 // Config are the configuration options for structured logger the EVM
 type Config struct {
@@ -237,6 +243,9 @@ func NewStructLogger(cfg *Config) *StructLogger {
 	if cfg != nil {
 		logger.cfg = *cfg
 	}
+	if logger.cfg.Limit == 0 {
+		logger.cfg.Limit = DefaultResultSizeLimit
+	}
 	return logger
 }
 
@@ -285,30 +294,29 @@ func (l *StructLogger) OnOpcode(pc uint64, opcode byte, gas, cost uint64, scope 
 		log.ReturnData = rData
 	}
 
-	// Copy a snapshot of the current storage to a new container
+	// Capture only the single storage entry touched by this SLOAD/SSTORE.
+	// The cumulative map is still maintained in l.storage for internal
+	// bookkeeping, but we no longer clone it into every log entry -- that
+	// produced O(N^2) memory growth with N distinct SLOADs.
 	var storage Storage
 	if !l.cfg.DisableStorage && (op == vm.SLOAD || op == vm.SSTORE) {
-		// initialise new changed values storage container for this contract
-		// if not present.
 		if l.storage[contractAddr] == nil {
 			l.storage[contractAddr] = make(Storage)
 		}
-		// capture SLOAD opcodes and record the read entry in the local storage
 		if op == vm.SLOAD && stackLen >= 1 {
 			var (
 				address = common.Hash(stack[stackLen-1].Bytes32())
 				value   = l.env.StateDB.GetState(contractAddr, address)
 			)
 			l.storage[contractAddr][address] = value
-			storage = maps.Clone(l.storage[contractAddr])
+			storage = Storage{address: value}
 		} else if op == vm.SSTORE && stackLen >= 2 {
-			// capture SSTORE opcodes and record the written entry in the local storage.
 			var (
 				value   = common.Hash(stack[stackLen-2].Bytes32())
 				address = common.Hash(stack[stackLen-1].Bytes32())
 			)
 			l.storage[contractAddr][address] = value
-			storage = maps.Clone(l.storage[contractAddr])
+			storage = Storage{address: value}
 		}
 	}
 	log.Storage = storage

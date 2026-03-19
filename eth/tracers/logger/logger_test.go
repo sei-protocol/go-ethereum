@@ -19,7 +19,9 @@ package logger
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
+	"runtime"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -60,6 +62,144 @@ func TestStoreCapture(t *testing.T) {
 	if logger.storage[contract.Address()][index] != exp {
 		t.Errorf("expected %x, got %x", exp, logger.storage[contract.Address()][index])
 	}
+}
+
+func TestDefaultResultSizeLimit(t *testing.T) {
+	logger := NewStructLogger(nil)
+	if logger.cfg.Limit != DefaultResultSizeLimit {
+		t.Fatalf("expected default limit %d, got %d", DefaultResultSizeLimit, logger.cfg.Limit)
+	}
+
+	customLimit := 1024
+	logger2 := NewStructLogger(&Config{Limit: customLimit})
+	if logger2.cfg.Limit != customLimit {
+		t.Fatalf("expected custom limit %d, got %d", customLimit, logger2.cfg.Limit)
+	}
+}
+
+// TestSLOADStorageDelta verifies that each SLOAD log entry contains only the
+// single slot that was read, not a clone of the entire cumulative storage map.
+// This is the fix for quadratic memory growth (immunefi-69712).
+func TestSLOADStorageDelta(t *testing.T) {
+	var (
+		logger   = NewStructLogger(&Config{Limit: 10 * 1024 * 1024})
+		evm      = vm.NewEVM(vm.BlockContext{}, &dummyStatedb{}, params.TestChainConfig, vm.Config{Tracer: logger.Hooks()}, nil)
+		contract = vm.NewContract(common.Address{}, common.Address{}, new(uint256.Int), 500000, nil)
+	)
+	// Build bytecode: 100 iterations of PUSH1 <i>, SLOAD (reads slot i)
+	numSlots := 100
+	var code []byte
+	for i := 0; i < numSlots; i++ {
+		code = append(code, byte(vm.PUSH1), byte(i), byte(vm.SLOAD), byte(vm.POP))
+	}
+	code = append(code, byte(vm.STOP))
+	contract.Code = code
+
+	logger.OnTxStart(evm.GetVMContext(), nil, common.Address{})
+	_, err := evm.Interpreter().Run(vm.CALL, contract, []byte{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The cumulative storage should have all slots
+	if len(logger.storage[contract.Address()]) != numSlots {
+		t.Fatalf("expected %d cumulative storage entries, got %d", numSlots, len(logger.storage[contract.Address()]))
+	}
+
+	// Parse each SLOAD log entry and verify its storage map has exactly 1 entry
+	for i, entry := range logger.logs {
+		var parsed structLogLegacy
+		if err := json.Unmarshal(entry, &parsed); err != nil {
+			t.Fatalf("log %d: unmarshal error: %v", i, err)
+		}
+		if parsed.Op != "SLOAD" {
+			continue
+		}
+		if parsed.Storage == nil {
+			t.Fatalf("SLOAD log at index %d: expected storage entry, got nil", i)
+		}
+		if len(*parsed.Storage) != 1 {
+			t.Fatalf("SLOAD log at index %d: expected 1 storage entry (delta only), got %d (cumulative clone leak)", i, len(*parsed.Storage))
+		}
+	}
+}
+
+// TestSLOADMemoryLinear verifies that tracing many SLOADs produces memory
+// usage that grows linearly, not quadratically.
+func TestSLOADMemoryLinear(t *testing.T) {
+	var (
+		logger   = NewStructLogger(&Config{Limit: 50 * 1024 * 1024})
+		evm      = vm.NewEVM(vm.BlockContext{}, &dummyStatedb{}, params.TestChainConfig, vm.Config{Tracer: logger.Hooks()}, nil)
+		contract = vm.NewContract(common.Address{}, common.Address{}, new(uint256.Int), 50_000_000, nil)
+	)
+	numSlots := 10000
+	var code []byte
+	for i := 0; i < numSlots; i++ {
+		code = append(code, byte(vm.PUSH2))
+		code = append(code, byte(i>>8), byte(i&0xff))
+		code = append(code, byte(vm.SLOAD), byte(vm.POP))
+	}
+	code = append(code, byte(vm.STOP))
+	contract.Code = code
+
+	runtime.GC()
+	var memBefore runtime.MemStats
+	runtime.ReadMemStats(&memBefore)
+
+	logger.OnTxStart(evm.GetVMContext(), nil, common.Address{})
+	_, err := evm.Interpreter().Run(vm.CALL, contract, []byte{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runtime.GC()
+	var memAfter runtime.MemStats
+	runtime.ReadMemStats(&memAfter)
+
+	allocatedMB := float64(memAfter.TotalAlloc-memBefore.TotalAlloc) / (1024 * 1024)
+	// With the quadratic bug, 10K SLOADs would produce ~500MB+ of allocations.
+	// With the fix, it should be well under 50MB.
+	maxAllowedMB := 50.0
+	if allocatedMB > maxAllowedMB {
+		t.Fatalf("memory usage too high: %.1f MB allocated for %d SLOADs (max allowed: %.0f MB). "+
+			"Possible quadratic clone regression.", allocatedMB, numSlots, maxAllowedMB)
+	}
+	t.Logf("OK: %.1f MB allocated for %d SLOADs", allocatedMB, numSlots)
+}
+
+func TestResultSizeLimitEnforced(t *testing.T) {
+	limit := 4096
+	var (
+		logger   = NewStructLogger(&Config{Limit: limit})
+		evm      = vm.NewEVM(vm.BlockContext{}, &dummyStatedb{}, params.TestChainConfig, vm.Config{Tracer: logger.Hooks()}, nil)
+		contract = vm.NewContract(common.Address{}, common.Address{}, new(uint256.Int), 10_000_000, nil)
+	)
+	// Many SLOADs to exceed the limit
+	var code []byte
+	for i := 0; i < 5000; i++ {
+		code = append(code, byte(vm.PUSH2))
+		code = append(code, byte(i>>8), byte(i&0xff))
+		code = append(code, byte(vm.SLOAD), byte(vm.POP))
+	}
+	code = append(code, byte(vm.STOP))
+	contract.Code = code
+
+	logger.OnTxStart(evm.GetVMContext(), nil, common.Address{})
+	_, err := evm.Interpreter().Run(vm.CALL, contract, []byte{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := logger.GetResult()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The result should be bounded: not all 5000 SLOADs should be in the output.
+	// With the limit, the logger stops recording once resultSize > limit.
+	if len(result) > limit*10 {
+		t.Fatalf("result size %d exceeded expected bound for limit %d", len(result), limit)
+	}
+	fmt.Printf("Result size: %d bytes with limit=%d\n", len(result), limit)
 }
 
 // Tests that blank fields don't appear in logs when JSON marshalled, to reduce
