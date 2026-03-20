@@ -284,10 +284,6 @@ func (l *StructLogger) OnOpcode(pc uint64, opcode byte, gas, cost uint64, scope 
 		log.ReturnData = rData
 	}
 
-	// Capture only the single storage entry touched by this SLOAD/SSTORE.
-	// The cumulative map is still maintained in l.storage for internal
-	// bookkeeping, but we no longer clone it into every log entry -- that
-	// produced O(N^2) memory growth with N distinct SLOADs.
 	var storage Storage
 	if !l.cfg.DisableStorage && (op == vm.SLOAD || op == vm.SSTORE) {
 		if l.storage[contractAddr] == nil {
