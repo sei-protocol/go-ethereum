@@ -39,13 +39,6 @@ import (
 // Storage represents a contract's storage.
 type Storage map[common.Hash]common.Hash
 
-// DefaultResultSizeLimit is the maximum bytes of JSON output the struct logger
-// will buffer before it stops recording new entries. This prevents unbounded
-// memory growth from storage-heavy traces (e.g. tight SLOAD loops).
-// Callers can override via Config.Limit. 128 MB covers all legitimate traces
-// while capping the damage from adversarial inputs.
-const DefaultResultSizeLimit = 128 * 1024 * 1024
-
 // Config are the configuration options for structured logger the EVM
 type Config struct {
 	EnableMemory     bool // enable memory capture
@@ -242,9 +235,6 @@ func NewStructLogger(cfg *Config) *StructLogger {
 	}
 	if cfg != nil {
 		logger.cfg = *cfg
-	}
-	if logger.cfg.Limit == 0 {
-		logger.cfg.Limit = DefaultResultSizeLimit
 	}
 	return logger
 }

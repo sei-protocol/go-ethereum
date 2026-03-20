@@ -19,7 +19,6 @@ package logger
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math/big"
 	"runtime"
 	"testing"
@@ -61,19 +60,6 @@ func TestStoreCapture(t *testing.T) {
 	exp := common.BigToHash(big.NewInt(1))
 	if logger.storage[contract.Address()][index] != exp {
 		t.Errorf("expected %x, got %x", exp, logger.storage[contract.Address()][index])
-	}
-}
-
-func TestDefaultResultSizeLimit(t *testing.T) {
-	logger := NewStructLogger(nil)
-	if logger.cfg.Limit != DefaultResultSizeLimit {
-		t.Fatalf("expected default limit %d, got %d", DefaultResultSizeLimit, logger.cfg.Limit)
-	}
-
-	customLimit := 1024
-	logger2 := NewStructLogger(&Config{Limit: customLimit})
-	if logger2.cfg.Limit != customLimit {
-		t.Fatalf("expected custom limit %d, got %d", customLimit, logger2.cfg.Limit)
 	}
 }
 
@@ -165,41 +151,6 @@ func TestSLOADMemoryLinear(t *testing.T) {
 			"Possible quadratic clone regression.", allocatedMB, numSlots, maxAllowedMB)
 	}
 	t.Logf("OK: %.1f MB allocated for %d SLOADs", allocatedMB, numSlots)
-}
-
-func TestResultSizeLimitEnforced(t *testing.T) {
-	limit := 4096
-	var (
-		logger   = NewStructLogger(&Config{Limit: limit})
-		evm      = vm.NewEVM(vm.BlockContext{}, &dummyStatedb{}, params.TestChainConfig, vm.Config{Tracer: logger.Hooks()}, nil)
-		contract = vm.NewContract(common.Address{}, common.Address{}, new(uint256.Int), 10_000_000, nil)
-	)
-	// Many SLOADs to exceed the limit
-	var code []byte
-	for i := 0; i < 5000; i++ {
-		code = append(code, byte(vm.PUSH2))
-		code = append(code, byte(i>>8), byte(i&0xff))
-		code = append(code, byte(vm.SLOAD), byte(vm.POP))
-	}
-	code = append(code, byte(vm.STOP))
-	contract.Code = code
-
-	logger.OnTxStart(evm.GetVMContext(), nil, common.Address{})
-	_, err := evm.Interpreter().Run(vm.CALL, contract, []byte{}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	result, err := logger.GetResult()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The result should be bounded: not all 5000 SLOADs should be in the output.
-	// With the limit, the logger stops recording once resultSize > limit.
-	if len(result) > limit*10 {
-		t.Fatalf("result size %d exceeded expected bound for limit %d", len(result), limit)
-	}
-	fmt.Printf("Result size: %d bytes with limit=%d\n", len(result), limit)
 }
 
 // Tests that blank fields don't appear in logs when JSON marshalled, to reduce
