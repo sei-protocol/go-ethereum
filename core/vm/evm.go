@@ -152,8 +152,9 @@ func NewEVM(blockCtx BlockContext, statedb StateDB, chainConfig *params.ChainCon
 	return evm
 }
 
-func (evm *EVM) GetInterpreter() IEVMInterpreter {
-	return evm.EVMInterpreter
+func (evm *EVM) GetInterpreter() *EVMInterpreter {
+	interpreter, _ := evm.EVMInterpreter.(*EVMInterpreter)
+	return interpreter
 }
 
 // SetPrecompiles sets the precompiled contracts for the EVM.
@@ -260,7 +261,7 @@ func (evm *EVM) Call(caller common.Address, addr common.Address, input []byte, g
 	if abortErr, ok := err.(AbortError); ok && abortErr.IsAbortError() {
 		return ret, gas, abortErr
 	}
-	
+
 	// When an error was returned by the EVM or when setting the creation code
 	// above we revert to the snapshot and consume any gas remaining. Additionally,
 	// when we're in homestead this also counts for code storage gas errors.
@@ -539,6 +540,9 @@ func (evm *EVM) create(caller common.Address, code []byte, gas uint64, value *ui
 	contract.IsDeployment = true
 
 	ret, err = evm.initNewContract(contract, address)
+	if abortErr, ok := err.(AbortError); ok && abortErr.IsAbortError() {
+		return ret, address, contract.Gas, abortErr
+	}
 	if err != nil && (evm.chainRules.IsHomestead || err != ErrCodeStoreOutOfGas) {
 		evm.StateDB.RevertToSnapshot(snapshot)
 		if err != ErrExecutionReverted {
