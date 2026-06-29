@@ -678,6 +678,9 @@ func opCreate(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 	scope.Contract.UseGas(gas, interpreter.evm.Config.Tracer, tracing.GasChangeCallContractCreation)
 
 	res, addr, returnGas, suberr := interpreter.evm.Create(scope.Contract.Address(), input, gas, &value)
+	if abortErr, ok := suberr.(AbortError); ok && abortErr.IsAbortError() {
+		return res, abortErr
+	}
 	// Push item on the stack based on the returned error. If the ruleset is
 	// homestead we must check for CodeStoreOutOfGasError (homestead only
 	// rule) and treat as an error, if the ruleset is frontier we must
@@ -720,6 +723,9 @@ func opCreate2(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]
 	stackvalue := size
 	res, addr, returnGas, suberr := interpreter.evm.Create2(scope.Contract.Address(), input, gas,
 		&endowment, &salt)
+	if abortErr, ok := suberr.(AbortError); ok && abortErr.IsAbortError() {
+		return res, abortErr
+	}
 	// Push item on the stack based on the returned error.
 	if suberr != nil {
 		stackvalue.Clear()
