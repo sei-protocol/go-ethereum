@@ -80,3 +80,18 @@ func TestSetWSConcurrentRequestBytesRaisesToReadLimit(t *testing.T) {
 	}
 	srv.wsConcurrentBudget.Release(500)
 }
+
+func TestSetReadLimitsRecomputesConcurrentBudget(t *testing.T) {
+	t.Parallel()
+
+	srv := NewServer()
+	srv.SetWSConcurrentRequestBytes(100)
+	srv.SetReadLimits(500)
+	if srv.wsConcurrentBudget == nil {
+		t.Fatal("expected budget to be configured")
+	}
+	if !srv.wsConcurrentBudget.TryAcquire(500) {
+		t.Fatal("budget should be recomputed when read limit increases")
+	}
+	srv.wsConcurrentBudget.Release(500)
+}

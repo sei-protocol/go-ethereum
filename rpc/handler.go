@@ -118,6 +118,9 @@ func (h *handler) tryAcquireRequestBytes(rawLen int64) (release func(), ok bool)
 }
 
 func (h *handler) respondServerBusy(msg *jsonrpcMessage) {
+	if msg.isNotification() {
+		return
+	}
 	h.startCallProc(func(cp *callProc) {
 		resp := msg.errorResponse(&internalServerError{errcodeServerBusy, errMsgServerBusy})
 		h.conn.writeJSON(cp.ctx, resp, true)
@@ -126,14 +129,17 @@ func (h *handler) respondServerBusy(msg *jsonrpcMessage) {
 
 func (h *handler) respondBatchServerBusy(calls []*jsonrpcMessage) {
 	h.startCallProc(func(cp *callProc) {
-		resp := errorMessage(&internalServerError{errcodeServerBusy, errMsgServerBusy})
+		busy := &internalServerError{errcodeServerBusy, errMsgServerBusy}
+		resp := make([]*jsonrpcMessage, 0, len(calls))
 		for _, msg := range calls {
-			if msg.isCall() {
-				resp.ID = msg.ID
-				break
+			if !msg.isNotification() {
+				resp = append(resp, msg.errorResponse(busy))
 			}
 		}
-		h.conn.writeJSON(cp.ctx, []*jsonrpcMessage{resp}, true)
+		if len(resp) == 0 {
+			return
+		}
+		h.conn.writeJSON(cp.ctx, resp, true)
 	})
 }
 

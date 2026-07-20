@@ -55,9 +55,10 @@ type Server struct {
 	run                atomic.Bool
 	batchItemLimit     int
 	batchResponseLimit int
-	httpBodyLimit      int
-	readLimit          int64
-	wsConcurrentBudget *semaphore.Weighted
+	httpBodyLimit            int
+	readLimit                int64
+	wsConcurrentRequestBytes int64 // configured limit; 0 disables
+	wsConcurrentBudget       *semaphore.Weighted
 }
 
 // NewServer creates a new server instance with no registered handlers.
@@ -100,6 +101,7 @@ func (s *Server) SetHTTPBodyLimit(limit int) {
 // This method should be called before processing any requests via Websocket server.
 func (s *Server) SetReadLimits(limit int64) {
 	s.readLimit = limit
+	s.recomputeWSConcurrentBudget()
 }
 
 // SetWSConcurrentRequestBytes bounds the total size, in bytes, of WebSocket JSON-RPC
@@ -111,6 +113,12 @@ func (s *Server) SetReadLimits(limit int64) {
 //
 // This method should be called before processing any requests via Websocket server.
 func (s *Server) SetWSConcurrentRequestBytes(limit int64) {
+	s.wsConcurrentRequestBytes = limit
+	s.recomputeWSConcurrentBudget()
+}
+
+func (s *Server) recomputeWSConcurrentBudget() {
+	limit := s.wsConcurrentRequestBytes
 	if limit <= 0 {
 		s.wsConcurrentBudget = nil
 		return
