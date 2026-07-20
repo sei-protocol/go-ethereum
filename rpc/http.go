@@ -66,9 +66,9 @@ func (hc *httpConn) remoteAddr() string {
 	return hc.url
 }
 
-func (hc *httpConn) readBatch() ([]*jsonrpcMessage, bool, error) {
+func (hc *httpConn) readBatch() ([]*jsonrpcMessage, bool, int64, error) {
 	<-hc.closeCh
-	return nil, false, io.EOF
+	return nil, false, 0, io.EOF
 }
 
 func (hc *httpConn) close() {

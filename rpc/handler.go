@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/log"
+	"golang.org/x/sync/semaphore"
 )
 
 // handler handles JSON-RPC messages. There is one handler per connection. Note that
@@ -65,6 +66,8 @@ type handler struct {
 	allowSubscribe       bool
 	batchRequestLimit    int
 	batchResponseMaxSize int
+	wsConcurrentBudget   *semaphore.Weighted
+	readLimit            int64
 
 	subLock    sync.Mutex
 	serverSubs map[ID]*Subscription
@@ -75,7 +78,7 @@ type callProc struct {
 	notifiers []*Notifier
 }
 
-func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *serviceRegistry, batchRequestLimit, batchResponseMaxSize int) *handler {
+func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *serviceRegistry, batchRequestLimit, batchResponseMaxSize int, wsConcurrentBudget *semaphore.Weighted, readLimit int64) *handler {
 	rootCtx, cancelRoot := context.WithCancel(connCtx)
 	h := &handler{
 		reg:                  reg,
@@ -90,12 +93,48 @@ func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *
 		log:                  log.Root(),
 		batchRequestLimit:    batchRequestLimit,
 		batchResponseMaxSize: batchResponseMaxSize,
+		wsConcurrentBudget:   wsConcurrentBudget,
+		readLimit:            readLimit,
 	}
 	if conn.remoteAddr() != "" {
 		h.log = h.log.New("conn", conn.remoteAddr())
 	}
 	h.unsubscribeCb = newCallback(reflect.Value{}, reflect.ValueOf(h.unsubscribe))
 	return h
+}
+
+func (h *handler) tryAcquireRequestBytes(rawLen int64) (release func(), ok bool) {
+	if h.wsConcurrentBudget == nil {
+		return func() {}, true
+	}
+	weight := rawLen
+	if weight <= 0 {
+		weight = h.readLimit
+	}
+	if !h.wsConcurrentBudget.TryAcquire(weight) {
+		return nil, false
+	}
+	return func() { h.wsConcurrentBudget.Release(weight) }, true
+}
+
+func (h *handler) respondServerBusy(msg *jsonrpcMessage) {
+	h.startCallProc(func(cp *callProc) {
+		resp := msg.errorResponse(&internalServerError{errcodeServerBusy, errMsgServerBusy})
+		h.conn.writeJSON(cp.ctx, resp, true)
+	})
+}
+
+func (h *handler) respondBatchServerBusy(calls []*jsonrpcMessage) {
+	h.startCallProc(func(cp *callProc) {
+		resp := errorMessage(&internalServerError{errcodeServerBusy, errMsgServerBusy})
+		for _, msg := range calls {
+			if msg.isCall() {
+				resp.ID = msg.ID
+				break
+			}
+		}
+		h.conn.writeJSON(cp.ctx, []*jsonrpcMessage{resp}, true)
+	})
 }
 
 // batchCallBuffer manages in progress call messages and their responses during a batch
@@ -168,7 +207,7 @@ func (b *batchCallBuffer) doWrite(ctx context.Context, conn jsonWriter, isErrorR
 }
 
 // handleBatch executes all messages in a batch and returns the responses.
-func (h *handler) handleBatch(msgs []*jsonrpcMessage) {
+func (h *handler) handleBatch(msgs []*jsonrpcMessage, rawLen int64) {
 	// Emit error response for empty batches:
 	if len(msgs) == 0 {
 		h.startCallProc(func(cp *callProc) {
@@ -195,8 +234,15 @@ func (h *handler) handleBatch(msgs []*jsonrpcMessage) {
 		return
 	}
 
+	release, ok := h.tryAcquireRequestBytes(rawLen)
+	if !ok {
+		h.respondBatchServerBusy(calls)
+		return
+	}
+
 	// Process calls on a goroutine because they may block indefinitely:
 	h.startCallProc(func(cp *callProc) {
+		defer release()
 		var (
 			timer      *time.Timer
 			cancel     context.CancelFunc
@@ -265,10 +311,16 @@ func (h *handler) respondWithBatchTooLarge(cp *callProc, batch []*jsonrpcMessage
 }
 
 // handleMsg handles a single non-batch message.
-func (h *handler) handleMsg(msg *jsonrpcMessage) {
+func (h *handler) handleMsg(msg *jsonrpcMessage, rawLen int64) {
 	msgs := []*jsonrpcMessage{msg}
 	h.handleResponses(msgs, func(msg *jsonrpcMessage) {
+		release, ok := h.tryAcquireRequestBytes(rawLen)
+		if !ok {
+			h.respondServerBusy(msg)
+			return
+		}
 		h.startCallProc(func(cp *callProc) {
+			defer release()
 			h.handleNonBatchCall(cp, msg)
 		})
 	})

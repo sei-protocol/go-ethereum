@@ -229,12 +229,12 @@ func (c *jsonCodec) remoteAddr() string {
 	return c.remote
 }
 
-func (c *jsonCodec) readBatch() (messages []*jsonrpcMessage, batch bool, err error) {
+func (c *jsonCodec) readBatch() (messages []*jsonrpcMessage, batch bool, rawLen int64, err error) {
 	// Decode the next JSON object in the input stream.
 	// This verifies basic syntax, etc.
 	var rawmsg json.RawMessage
 	if err := c.decode(&rawmsg); err != nil {
-		return nil, false, err
+		return nil, false, 0, err
 	}
 	messages, batch = parseMessage(rawmsg)
 	for i, msg := range messages {
@@ -244,7 +244,7 @@ func (c *jsonCodec) readBatch() (messages []*jsonrpcMessage, batch bool, err err
 			messages[i] = new(jsonrpcMessage)
 		}
 	}
-	return messages, batch, nil
+	return messages, batch, int64(len(rawmsg)), nil
 }
 
 func (c *jsonCodec) writeJSON(ctx context.Context, v interface{}, isErrorResponse bool) error {

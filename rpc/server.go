@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/log"
+	"golang.org/x/sync/semaphore"
 )
 
 const MetadataApi = "rpc"
@@ -56,6 +57,7 @@ type Server struct {
 	batchResponseLimit int
 	httpBodyLimit      int
 	readLimit          int64
+	wsConcurrentBudget *semaphore.Weighted
 }
 
 // NewServer creates a new server instance with no registered handlers.
@@ -100,6 +102,25 @@ func (s *Server) SetReadLimits(limit int64) {
 	s.readLimit = limit
 }
 
+// SetWSConcurrentRequestBytes bounds the total size, in bytes, of WebSocket JSON-RPC
+// request frames admitted for processing concurrently, weighted by each frame's size.
+// Requests that would exceed the budget are rejected before handler dispatch.
+// Set to 0 to disable the limit. If limit is positive and smaller than the current
+// read limit (SetReadLimits), it is raised to the read limit so a single maximum-size
+// frame can always be admitted.
+//
+// This method should be called before processing any requests via Websocket server.
+func (s *Server) SetWSConcurrentRequestBytes(limit int64) {
+	if limit <= 0 {
+		s.wsConcurrentBudget = nil
+		return
+	}
+	if s.readLimit > 0 && limit < s.readLimit {
+		limit = s.readLimit
+	}
+	s.wsConcurrentBudget = semaphore.NewWeighted(limit)
+}
+
 // RegisterName creates a service for the given receiver type under the given name. When no
 // methods on the given receiver match the criteria to be either an RPC method or a
 // subscription an error is returned. Otherwise a new service is created and added to the
@@ -131,6 +152,8 @@ func (s *Server) ServeCodec(codec ServerCodec, options CodecOption) {
 		idgen:              s.idgen,
 		batchItemLimit:     s.batchItemLimit,
 		batchResponseLimit: s.batchResponseLimit,
+		wsConcurrentBudget: s.wsConcurrentBudget,
+		readLimit:          s.readLimit,
 	}
 	c := initClient(codec, &s.services, cfg)
 	<-codec.closed()
@@ -164,11 +187,11 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 		return
 	}
 
-	h := newHandler(ctx, codec, s.idgen, &s.services, s.batchItemLimit, s.batchResponseLimit)
+	h := newHandler(ctx, codec, s.idgen, &s.services, s.batchItemLimit, s.batchResponseLimit, nil, s.readLimit)
 	h.allowSubscribe = false
 	defer h.close(io.EOF, nil)
 
-	reqs, batch, err := codec.readBatch()
+	reqs, batch, rawLen, err := codec.readBatch()
 	if err != nil {
 		if msg := messageForReadError(err); msg != "" {
 			resp := errorMessage(&invalidMessageError{msg})
@@ -186,9 +209,9 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 		}
 	}
 	if batch {
-		h.handleBatch(reqs)
+		h.handleBatch(reqs, rawLen)
 	} else {
-		h.handleMsg(reqs[0])
+		h.handleMsg(reqs[0], rawLen)
 	}
 }
 
