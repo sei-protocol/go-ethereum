@@ -13,28 +13,45 @@ import (
 func TestWSConcurrentRequestBytes(t *testing.T) {
 	t.Parallel()
 
+	const (
+		sleepDuration = 200 * time.Millisecond
+		pad           = 48
+	)
+
 	srv := newTestServer()
-	defer srv.Stop()
 
 	p1, p2 := net.Pipe()
-	defer p1.Close()
-	defer p2.Close()
 
-	payload := fmt.Sprintf(
-		`{"jsonrpc":"2.0","id":%d,"method":"test_block","_pad":"%s"}`,
-		1, strings.Repeat("x", 48),
-	)
+	makeMsg := func(id int) string {
+		return fmt.Sprintf(
+			`{"jsonrpc":"2.0","id":%d,"method":"test_sleep","params":["200ms"],"_pad":"%s"}`,
+			id, strings.Repeat("x", pad),
+		)
+	}
+	payload := makeMsg(1)
 	frameSize := int64(len(payload))
 	srv.SetReadLimits(frameSize)
 	srv.SetWSConcurrentRequestBytes(frameSize)
 
-	go srv.ServeCodec(NewCodec(p1), 0)
+	serveDone := make(chan struct{})
+	go func() {
+		srv.ServeCodec(NewCodec(p1), 0)
+		close(serveDone)
+	}()
+
+	t.Cleanup(func() {
+		p2.Close()
+		p1.Close()
+		select {
+		case <-serveDone:
+		case <-time.After(2 * time.Second):
+			t.Error("ServeCodec did not exit within 2s")
+		}
+		srv.Stop()
+	})
 
 	writeReq := func(id int) {
-		msg := fmt.Sprintf(
-			`{"jsonrpc":"2.0","id":%d,"method":"test_block","_pad":"%s"}`,
-			id, strings.Repeat("x", 48),
-		)
+		msg := makeMsg(id)
 		if len(msg) != len(payload) {
 			t.Fatalf("unexpected payload size %d != %d", len(msg), len(payload))
 		}
@@ -43,18 +60,16 @@ func TestWSConcurrentRequestBytes(t *testing.T) {
 		}
 	}
 
-	// One in-flight request exhausts the budget; the next is rejected before dispatch.
+	// One in-flight sleep holds the budget; the next frame is rejected before dispatch.
 	writeReq(1)
 	writeReq(2)
 
 	dec := json.NewDecoder(p2)
-	deadline := time.After(5 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	gotBusy := false
 	for !gotBusy {
-		select {
-		case <-deadline:
+		if time.Now().After(deadline) {
 			t.Fatal("timed out waiting for server busy response")
-		default:
 		}
 		var resp jsonrpcMessage
 		if err := dec.Decode(&resp); err != nil {
@@ -64,6 +79,14 @@ func TestWSConcurrentRequestBytes(t *testing.T) {
 			gotBusy = true
 		}
 	}
+
+	// Let the in-flight sleep finish and release its budget before pipe teardown.
+	_ = p2.SetReadDeadline(time.Now().Add(sleepDuration + 500*time.Millisecond))
+	var sleepResp jsonrpcMessage
+	if err := dec.Decode(&sleepResp); err != nil {
+		t.Fatalf("decode sleep response: %v", err)
+	}
+	_ = p2.SetReadDeadline(time.Time{})
 }
 
 func TestSetWSConcurrentRequestBytesRaisesToReadLimit(t *testing.T) {
