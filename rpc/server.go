@@ -49,12 +49,12 @@ type Server struct {
 	services serviceRegistry
 	idgen    func() ID
 
-	mutex              sync.Mutex
-	codecs             map[ServerCodec]struct{}
-	denyList           map[string]struct{}
-	run                atomic.Bool
-	batchItemLimit     int
-	batchResponseLimit int
+	mutex                    sync.Mutex
+	codecs                   map[ServerCodec]struct{}
+	denyList                 map[string]struct{}
+	run                      atomic.Bool
+	batchItemLimit           int
+	batchResponseLimit       int
 	httpBodyLimit            int
 	readLimit                int64
 	wsConcurrentRequestBytes int64 // configured limit; 0 disables
@@ -106,18 +106,7 @@ func (s *Server) SetReadLimits(limit int64) {
 
 // SetWSConcurrentRequestBytes bounds the total size, in bytes, of JSON-RPC request
 // frames on persistent connections (WebSocket, IPC, stdio) that may be read and
-// processed concurrently, weighted by each frame's size. Budget is reserved before a
-// frame is read (using the read limit as a worst-case estimate) and tightened to the
-// frame's actual size once known, so the byte cost of decoding is bounded by the
-// budget too, not just handler execution. When the budget is exhausted, further
-// frames are not read from the connection until in-flight work releases its
-// reservation (read-side backpressure); there is no more per-request rejection
-// response, since a frame's request ID isn't known until after it's decoded. If a
-// connection cannot acquire budget within wsAdmissionTimeout, it is torn down rather
-// than left blocked indefinitely. Set to 0 to disable the limit. If limit is positive
-// and smaller than the current read limit (SetReadLimits), it is raised to the read
-// limit so a single maximum-size frame can always be admitted.
-//
+// processed concurrently, weighted by each frame's size. Set to 0 to disable the limit.
 // This method should be called before processing any requests via Websocket server.
 func (s *Server) SetWSConcurrentRequestBytes(limit int64) {
 	s.wsConcurrentRequestBytes = limit
