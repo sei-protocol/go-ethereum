@@ -104,12 +104,19 @@ func (s *Server) SetReadLimits(limit int64) {
 	s.recomputeWSConcurrentBudget()
 }
 
-// SetWSConcurrentRequestBytes bounds the total size, in bytes, of WebSocket JSON-RPC
-// request frames admitted for processing concurrently, weighted by each frame's size.
-// Requests that would exceed the budget are rejected before handler dispatch.
-// Set to 0 to disable the limit. If limit is positive and smaller than the current
-// read limit (SetReadLimits), it is raised to the read limit so a single maximum-size
-// frame can always be admitted.
+// SetWSConcurrentRequestBytes bounds the total size, in bytes, of JSON-RPC request
+// frames on persistent connections (WebSocket, IPC, stdio) that may be read and
+// processed concurrently, weighted by each frame's size. Budget is reserved before a
+// frame is read (using the read limit as a worst-case estimate) and tightened to the
+// frame's actual size once known, so the byte cost of decoding is bounded by the
+// budget too, not just handler execution. When the budget is exhausted, further
+// frames are not read from the connection until in-flight work releases its
+// reservation (read-side backpressure); there is no more per-request rejection
+// response, since a frame's request ID isn't known until after it's decoded. If a
+// connection cannot acquire budget within wsAdmissionTimeout, it is torn down rather
+// than left blocked indefinitely. Set to 0 to disable the limit. If limit is positive
+// and smaller than the current read limit (SetReadLimits), it is raised to the read
+// limit so a single maximum-size frame can always be admitted.
 //
 // This method should be called before processing any requests via Websocket server.
 func (s *Server) SetWSConcurrentRequestBytes(limit int64) {
@@ -199,7 +206,7 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 	h.allowSubscribe = false
 	defer h.close(io.EOF, nil)
 
-	reqs, batch, rawLen, err := codec.readBatch()
+	reqs, batch, _, err := codec.readBatch()
 	if err != nil {
 		if msg := messageForReadError(err); msg != "" {
 			resp := errorMessage(&invalidMessageError{msg})
@@ -217,9 +224,9 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 		}
 	}
 	if batch {
-		h.handleBatch(reqs, rawLen)
+		h.handleBatch(reqs, func() {})
 	} else {
-		h.handleMsg(reqs[0], rawLen)
+		h.handleMsg(reqs[0], func() {})
 	}
 }
 
