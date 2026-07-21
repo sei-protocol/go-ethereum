@@ -741,6 +741,9 @@ func (c *Client) read(conn *clientConn) {
 		release, err := h.commitFrameBudget(h.rootCtx, rawLen)
 		if err != nil {
 			h.releasePreDecode()
+			if resp := frameBudgetExceededResponse(msgs, batch); resp != nil {
+				codec.writeJSON(context.Background(), resp, true)
+			}
 			c.readErr <- err
 			return
 		}

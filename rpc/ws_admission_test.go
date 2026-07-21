@@ -148,3 +148,57 @@ func TestSetReadLimitsRecomputesConcurrentBudget(t *testing.T) {
 	}
 	srv.wsConcurrentBudget.Release(500)
 }
+
+// TestFrameBudgetExceededResponse covers the response written when a frame decodes
+// successfully but exceeds the concurrent request-byte budget.
+func TestFrameBudgetExceededResponse(t *testing.T) {
+	t.Parallel()
+
+	call := &jsonrpcMessage{Version: vsn, ID: json.RawMessage("1"), Method: "test_method"}
+	notification := &jsonrpcMessage{Version: vsn, Method: "test_method"}
+
+	t.Run("call", func(t *testing.T) {
+		resp := frameBudgetExceededResponse([]*jsonrpcMessage{call}, false)
+		msg, ok := resp.(*jsonrpcMessage)
+		if !ok {
+			t.Fatalf("expected *jsonrpcMessage, got %T", resp)
+		}
+		if msg.Error == nil || msg.Error.Code != errcodeRequestTooLarge {
+			t.Fatalf("expected error code %d, got %+v", errcodeRequestTooLarge, msg.Error)
+		}
+		if string(msg.ID) != string(call.ID) {
+			t.Fatalf("expected response id %s, got %s", call.ID, msg.ID)
+		}
+	})
+
+	t.Run("notification", func(t *testing.T) {
+		if resp := frameBudgetExceededResponse([]*jsonrpcMessage{notification}, false); resp != nil {
+			t.Fatalf("expected no response for a notification, got %v", resp)
+		}
+	})
+
+	t.Run("batch", func(t *testing.T) {
+		resp := frameBudgetExceededResponse([]*jsonrpcMessage{notification, call}, true)
+		batch, ok := resp.([]*jsonrpcMessage)
+		if !ok || len(batch) != 1 {
+			t.Fatalf("expected a single-element batch response, got %T: %v", resp, resp)
+		}
+		if batch[0].Error == nil || batch[0].Error.Code != errcodeRequestTooLarge {
+			t.Fatalf("expected error code %d, got %+v", errcodeRequestTooLarge, batch[0].Error)
+		}
+		if string(batch[0].ID) != string(call.ID) {
+			t.Fatalf("expected response tagged with the call's id %s, got %s", call.ID, batch[0].ID)
+		}
+	})
+
+	t.Run("batch with no calls", func(t *testing.T) {
+		resp := frameBudgetExceededResponse([]*jsonrpcMessage{notification}, true)
+		batch, ok := resp.([]*jsonrpcMessage)
+		if !ok || len(batch) != 1 {
+			t.Fatalf("expected a single-element batch response, got %T: %v", resp, resp)
+		}
+		if string(batch[0].ID) != string(null) {
+			t.Fatalf("expected null id when no call is present, got %s", batch[0].ID)
+		}
+	})
+}

@@ -165,6 +165,27 @@ func (h *handler) commitFrameBudget(ctx context.Context, rawLen int64) (release 
 	return func() { h.wsConcurrentBudget.Release(weight) }, nil
 }
 
+// frameBudgetExceededResponse builds the JSON-RPC error response for a frame that decoded
+// successfully but could not be admitted under the concurrent request-byte budget.
+func frameBudgetExceededResponse(msgs []*jsonrpcMessage, batch bool) interface{} {
+	err := &internalServerError{errcodeRequestTooLarge, errMsgRequestTooLarge}
+	if !batch {
+		msg := msgs[0]
+		if msg.isNotification() {
+			return nil
+		}
+		return msg.errorResponse(err)
+	}
+	resp := errorMessage(err)
+	for _, msg := range msgs {
+		if msg.isCall() {
+			resp.ID = msg.ID
+			break
+		}
+	}
+	return []*jsonrpcMessage{resp}
+}
+
 // batchCallBuffer manages in progress call messages and their responses during a batch
 // call. Calls need to be synchronized between the processing and timeout-triggering
 // goroutines.

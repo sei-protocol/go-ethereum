@@ -61,6 +61,7 @@ const (
 	errcodeDefault          = -32000
 	errcodeTimeout          = -32002
 	errcodeResponseTooLarge = -32003
+	errcodeRequestTooLarge  = -32004
 	errcodePanic            = -32603
 	errcodeMarshalError     = -32603
 
@@ -71,6 +72,7 @@ const (
 	errMsgTimeout          = "request timed out"
 	errMsgResponseTooLarge = "response too large"
 	errMsgBatchTooLarge    = "batch too large"
+	errMsgRequestTooLarge  = "request exceeds concurrent request-byte budget"
 )
 
 type methodNotFoundError struct{ method string }
