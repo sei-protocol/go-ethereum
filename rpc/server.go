@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/log"
+	"golang.org/x/sync/semaphore"
 )
 
 const MetadataApi = "rpc"
@@ -48,14 +49,16 @@ type Server struct {
 	services serviceRegistry
 	idgen    func() ID
 
-	mutex              sync.Mutex
-	codecs             map[ServerCodec]struct{}
-	denyList           map[string]struct{}
-	run                atomic.Bool
-	batchItemLimit     int
-	batchResponseLimit int
-	httpBodyLimit      int
-	readLimit          int64
+	mutex                    sync.Mutex
+	codecs                   map[ServerCodec]struct{}
+	denyList                 map[string]struct{}
+	run                      atomic.Bool
+	batchItemLimit           int
+	batchResponseLimit       int
+	httpBodyLimit            int
+	readLimit                int64
+	wsConcurrentRequestBytes int64 // configured limit; 0 disables
+	wsConcurrentBudget       *semaphore.Weighted
 }
 
 // NewServer creates a new server instance with no registered handlers.
@@ -98,6 +101,28 @@ func (s *Server) SetHTTPBodyLimit(limit int) {
 // This method should be called before processing any requests via Websocket server.
 func (s *Server) SetReadLimits(limit int64) {
 	s.readLimit = limit
+	s.recomputeWSConcurrentBudget()
+}
+
+// SetWSConcurrentRequestBytes bounds the total size, in bytes, of JSON-RPC request
+// frames on persistent connections (WebSocket, IPC, stdio) that may be read and
+// processed concurrently, weighted by each frame's size. Set to 0 to disable the limit.
+// This method should be called before processing any requests via Websocket server.
+func (s *Server) SetWSConcurrentRequestBytes(limit int64) {
+	s.wsConcurrentRequestBytes = limit
+	s.recomputeWSConcurrentBudget()
+}
+
+func (s *Server) recomputeWSConcurrentBudget() {
+	limit := s.wsConcurrentRequestBytes
+	if limit <= 0 {
+		s.wsConcurrentBudget = nil
+		return
+	}
+	if s.readLimit > 0 && limit < s.readLimit {
+		limit = s.readLimit
+	}
+	s.wsConcurrentBudget = semaphore.NewWeighted(limit)
 }
 
 // RegisterName creates a service for the given receiver type under the given name. When no
@@ -131,6 +156,8 @@ func (s *Server) ServeCodec(codec ServerCodec, options CodecOption) {
 		idgen:              s.idgen,
 		batchItemLimit:     s.batchItemLimit,
 		batchResponseLimit: s.batchResponseLimit,
+		wsConcurrentBudget: s.wsConcurrentBudget,
+		readLimit:          s.readLimit,
 	}
 	c := initClient(codec, &s.services, cfg)
 	<-codec.closed()
@@ -164,11 +191,11 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 		return
 	}
 
-	h := newHandler(ctx, codec, s.idgen, &s.services, s.batchItemLimit, s.batchResponseLimit)
+	h := newHandler(ctx, codec, s.idgen, &s.services, s.batchItemLimit, s.batchResponseLimit, nil, s.readLimit)
 	h.allowSubscribe = false
 	defer h.close(io.EOF, nil)
 
-	reqs, batch, err := codec.readBatch()
+	reqs, batch, _, err := codec.readBatch()
 	if err != nil {
 		if msg := messageForReadError(err); msg != "" {
 			resp := errorMessage(&invalidMessageError{msg})
@@ -186,9 +213,9 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 		}
 	}
 	if batch {
-		h.handleBatch(reqs)
+		h.handleBatch(reqs, func() {})
 	} else {
-		h.handleMsg(reqs[0])
+		h.handleMsg(reqs[0], func() {})
 	}
 }
 

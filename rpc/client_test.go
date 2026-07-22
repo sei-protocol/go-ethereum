@@ -553,14 +553,14 @@ type unsubscribeBlocker struct {
 	quit chan struct{}
 }
 
-func (b *unsubscribeBlocker) readBatch() ([]*jsonrpcMessage, bool, error) {
-	msgs, batch, err := b.ServerCodec.readBatch()
+func (b *unsubscribeBlocker) readBatch() ([]*jsonrpcMessage, bool, int64, error) {
+	msgs, batch, rawLen, err := b.ServerCodec.readBatch()
 	for _, msg := range msgs {
 		if msg.isUnsubscribe() {
 			<-b.quit
 		}
 	}
-	return msgs, batch, err
+	return msgs, batch, rawLen, err
 }
 
 // TestUnsubscribeTimeout verifies that calling the client's Unsubscribe
@@ -618,12 +618,12 @@ type unsubscribeRecorder struct {
 	unsubscribes map[string]bool
 }
 
-func (r *unsubscribeRecorder) readBatch() ([]*jsonrpcMessage, bool, error) {
+func (r *unsubscribeRecorder) readBatch() ([]*jsonrpcMessage, bool, int64, error) {
 	if r.unsubscribes == nil {
 		r.unsubscribes = make(map[string]bool)
 	}
 
-	msgs, batch, err := r.ServerCodec.readBatch()
+	msgs, batch, rawLen, err := r.ServerCodec.readBatch()
 	for _, msg := range msgs {
 		if msg.isUnsubscribe() {
 			var params []string
@@ -633,7 +633,7 @@ func (r *unsubscribeRecorder) readBatch() ([]*jsonrpcMessage, bool, error) {
 			r.unsubscribes[params[0]] = true
 		}
 	}
-	return msgs, batch, err
+	return msgs, batch, rawLen, err
 }
 
 // This checks that Client calls the _unsubscribe method on the server when Unsubscribe is

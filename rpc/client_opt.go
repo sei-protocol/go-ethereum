@@ -20,6 +20,7 @@ import (
 	"net/http"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/sync/semaphore"
 )
 
 // ClientOption is a configuration option for the RPC client.
@@ -41,6 +42,8 @@ type clientConfig struct {
 	idgen              func() ID
 	batchItemLimit     int
 	batchResponseLimit int
+	wsConcurrentBudget *semaphore.Weighted
+	readLimit          int64
 }
 
 func (cfg *clientConfig) initHeaders() {

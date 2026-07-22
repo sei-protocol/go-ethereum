@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/log"
+	"golang.org/x/sync/semaphore"
 )
 
 // handler handles JSON-RPC messages. There is one handler per connection. Note that
@@ -65,6 +66,8 @@ type handler struct {
 	allowSubscribe       bool
 	batchRequestLimit    int
 	batchResponseMaxSize int
+	wsConcurrentBudget   *semaphore.Weighted
+	readLimit            int64
 
 	subLock    sync.Mutex
 	serverSubs map[ID]*Subscription
@@ -75,7 +78,7 @@ type callProc struct {
 	notifiers []*Notifier
 }
 
-func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *serviceRegistry, batchRequestLimit, batchResponseMaxSize int) *handler {
+func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *serviceRegistry, batchRequestLimit, batchResponseMaxSize int, wsConcurrentBudget *semaphore.Weighted, readLimit int64) *handler {
 	rootCtx, cancelRoot := context.WithCancel(connCtx)
 	h := &handler{
 		reg:                  reg,
@@ -90,12 +93,97 @@ func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *
 		log:                  log.Root(),
 		batchRequestLimit:    batchRequestLimit,
 		batchResponseMaxSize: batchResponseMaxSize,
+		wsConcurrentBudget:   wsConcurrentBudget,
+		readLimit:            readLimit,
 	}
 	if conn.remoteAddr() != "" {
 		h.log = h.log.New("conn", conn.remoteAddr())
 	}
 	h.unsubscribeCb = newCallback(reflect.Value{}, reflect.ValueOf(h.unsubscribe))
 	return h
+}
+
+// wsAdmissionTimeout bounds how long a persistent connection will wait for
+// concurrent-byte budget to free up before a frame is read or committed.
+const wsAdmissionTimeout = 30 * time.Second
+
+// acquirePreDecode reserves frame budget before the codec reads/decodes the next
+// message. The wait is bounded by wsAdmissionTimeout.
+func (h *handler) acquirePreDecode(ctx context.Context) error {
+	if h.wsConcurrentBudget == nil || h.readLimit <= 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, wsAdmissionTimeout)
+	defer cancel()
+	if err := h.wsConcurrentBudget.Acquire(ctx, h.readLimit); err != nil {
+		return fmt.Errorf("concurrent request byte budget exhausted: %w", err)
+	}
+	return nil
+}
+
+// releasePreDecode releases a pre-decode reservation after a failed read/decode or a
+// failed commitFrameBudget call.
+func (h *handler) releasePreDecode() {
+	if h.wsConcurrentBudget == nil || h.readLimit <= 0 {
+		return
+	}
+	h.wsConcurrentBudget.Release(h.readLimit)
+}
+
+// commitFrameBudget finalizes the reservation for a successfully decoded frame,
+// reconciling any pre-decode reservation against the frame's actual size.
+func (h *handler) commitFrameBudget(ctx context.Context, rawLen int64) (release func(), err error) {
+	if h.wsConcurrentBudget == nil {
+		return func() {}, nil
+	}
+	if h.readLimit <= 0 {
+		if rawLen <= 0 {
+			return func() {}, nil
+		}
+		ctx, cancel := context.WithTimeout(ctx, wsAdmissionTimeout)
+		defer cancel()
+		if err := h.wsConcurrentBudget.Acquire(ctx, rawLen); err != nil {
+			return nil, fmt.Errorf("concurrent request byte budget exhausted: %w", err)
+		}
+		return func() { h.wsConcurrentBudget.Release(rawLen) }, nil
+	}
+
+	weight := rawLen
+	if weight <= 0 {
+		weight = h.readLimit
+	}
+	switch {
+	case weight < h.readLimit:
+		h.wsConcurrentBudget.Release(h.readLimit - weight)
+	case weight > h.readLimit:
+		ctx, cancel := context.WithTimeout(ctx, wsAdmissionTimeout)
+		defer cancel()
+		if err := h.wsConcurrentBudget.Acquire(ctx, weight-h.readLimit); err != nil {
+			return nil, fmt.Errorf("concurrent request byte budget exhausted: %w", err)
+		}
+	}
+	return func() { h.wsConcurrentBudget.Release(weight) }, nil
+}
+
+// frameBudgetExceededResponse builds the JSON-RPC error response for a frame that decoded
+// successfully but could not be admitted under the concurrent request-byte budget.
+func frameBudgetExceededResponse(msgs []*jsonrpcMessage, batch bool) interface{} {
+	err := &internalServerError{errcodeRequestTooLarge, errMsgRequestTooLarge}
+	if !batch {
+		msg := msgs[0]
+		if msg.isNotification() {
+			return nil
+		}
+		return msg.errorResponse(err)
+	}
+	resp := errorMessage(err)
+	for _, msg := range msgs {
+		if msg.isCall() {
+			resp.ID = msg.ID
+			break
+		}
+	}
+	return []*jsonrpcMessage{resp}
 }
 
 // batchCallBuffer manages in progress call messages and their responses during a batch
@@ -168,10 +256,14 @@ func (b *batchCallBuffer) doWrite(ctx context.Context, conn jsonWriter, isErrorR
 }
 
 // handleBatch executes all messages in a batch and returns the responses.
-func (h *handler) handleBatch(msgs []*jsonrpcMessage) {
+func (h *handler) handleBatch(msgs []*jsonrpcMessage, release func()) {
+	if release == nil {
+		release = func() {}
+	}
 	// Emit error response for empty batches:
 	if len(msgs) == 0 {
 		h.startCallProc(func(cp *callProc) {
+			defer release()
 			resp := errorMessage(&invalidRequestError{"empty batch"})
 			h.conn.writeJSON(cp.ctx, resp, true)
 		})
@@ -180,6 +272,7 @@ func (h *handler) handleBatch(msgs []*jsonrpcMessage) {
 	// Apply limit on total number of requests.
 	if h.batchRequestLimit != 0 && len(msgs) > h.batchRequestLimit {
 		h.startCallProc(func(cp *callProc) {
+			defer release()
 			h.respondWithBatchTooLarge(cp, msgs)
 		})
 		return
@@ -192,6 +285,7 @@ func (h *handler) handleBatch(msgs []*jsonrpcMessage) {
 		calls = append(calls, msg)
 	})
 	if len(calls) == 0 {
+		release()
 		return
 	}
 
@@ -243,6 +337,7 @@ func (h *handler) handleBatch(msgs []*jsonrpcMessage) {
 		}
 
 		h.addSubscriptions(cp.notifiers)
+		release()
 		callBuffer.write(cp.ctx, h.conn)
 		for _, n := range cp.notifiers {
 			n.activate()
@@ -265,16 +360,27 @@ func (h *handler) respondWithBatchTooLarge(cp *callProc, batch []*jsonrpcMessage
 }
 
 // handleMsg handles a single non-batch message.
-func (h *handler) handleMsg(msg *jsonrpcMessage) {
+func (h *handler) handleMsg(msg *jsonrpcMessage, release func()) {
+	if release == nil {
+		release = func() {}
+	}
 	msgs := []*jsonrpcMessage{msg}
+	var callStarted bool
 	h.handleResponses(msgs, func(msg *jsonrpcMessage) {
+		callStarted = true
 		h.startCallProc(func(cp *callProc) {
-			h.handleNonBatchCall(cp, msg)
+			h.handleNonBatchCall(cp, msg, release)
 		})
 	})
+	if !callStarted {
+		release()
+	}
 }
 
-func (h *handler) handleNonBatchCall(cp *callProc, msg *jsonrpcMessage) {
+func (h *handler) handleNonBatchCall(cp *callProc, msg *jsonrpcMessage, release func()) {
+	if release == nil {
+		release = func() {}
+	}
 	var (
 		responded sync.Once
 		timer     *time.Timer
@@ -301,6 +407,7 @@ func (h *handler) handleNonBatchCall(cp *callProc, msg *jsonrpcMessage) {
 		timer.Stop()
 	}
 	h.addSubscriptions(cp.notifiers)
+	release()
 	if answer != nil {
 		responded.Do(func() {
 			h.conn.writeJSON(cp.ctx, answer, false)

@@ -42,7 +42,7 @@ type API struct {
 // multiple go-routines concurrently.
 type ServerCodec interface {
 	peerInfo() PeerInfo
-	readBatch() (msgs []*jsonrpcMessage, isBatch bool, err error)
+	readBatch() (msgs []*jsonrpcMessage, isBatch bool, rawLen int64, err error)
 	close()
 
 	jsonWriter
