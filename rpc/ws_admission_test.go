@@ -1,13 +1,17 @@
 package rpc
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 )
 
 func TestWSConcurrentRequestBytesSingleInFlight(t *testing.T) {
@@ -201,4 +205,230 @@ func TestFrameBudgetExceededResponse(t *testing.T) {
 			t.Fatalf("expected null id when no call is present, got %s", batch[0].ID)
 		}
 	})
+}
+
+// stubJSONWriter satisfies jsonWriter for handler unit tests.
+type stubJSONWriter struct{}
+
+func (stubJSONWriter) writeJSON(context.Context, interface{}, bool) error { return nil }
+func (stubJSONWriter) closed() <-chan interface{}                         { return make(chan interface{}) }
+func (stubJSONWriter) remoteAddr() string                                 { return "" }
+
+func newAdmissionTestHandler(budget int64, readLimit int64, timeout time.Duration, hook func(string)) *handler {
+	return newHandler(
+		context.Background(),
+		stubJSONWriter{},
+		sequentialIDGenerator(),
+		new(serviceRegistry),
+		0, 0,
+		semaphore.NewWeighted(budget),
+		readLimit,
+		hook,
+		timeout,
+	)
+}
+
+func TestWSAdmissionTimeoutOrDefault(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{name: "zero uses default", timeout: 0, want: defaultWSAdmissionTimeout},
+		{name: "negative uses default", timeout: -time.Second, want: defaultWSAdmissionTimeout},
+		{name: "positive is kept", timeout: 5 * time.Second, want: 5 * time.Second},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := wsAdmissionTimeoutOrDefault(tc.timeout); got != tc.want {
+				t.Fatalf("wsAdmissionTimeoutOrDefault(%v) = %v, want %v", tc.timeout, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFireAdmissionEventOnBudgetTimeout(t *testing.T) {
+	t.Parallel()
+
+	const reason = WSAdmissionReasonBudgetWaitTimeout
+
+	t.Run("fires on deadline exceeded", func(t *testing.T) {
+		var got string
+		h := newAdmissionTestHandler(1, 1, time.Second, func(r string) { got = r })
+		h.fireAdmissionEventOnBudgetTimeout(context.DeadlineExceeded, reason)
+		if got != reason {
+			t.Fatalf("hook reason = %q, want %q", got, reason)
+		}
+	})
+
+	t.Run("does not fire on cancel", func(t *testing.T) {
+		var hookCalled bool
+		h := newAdmissionTestHandler(1, 1, time.Second, func(string) { hookCalled = true })
+		h.fireAdmissionEventOnBudgetTimeout(context.Canceled, reason)
+		if hookCalled {
+			t.Fatal("hook should not run for context.Canceled")
+		}
+	})
+
+	t.Run("does not fire without hook", func(t *testing.T) {
+		h := newAdmissionTestHandler(1, 1, time.Second, nil)
+		h.fireAdmissionEventOnBudgetTimeout(context.DeadlineExceeded, reason)
+	})
+}
+
+func TestAcquirePreDecodeFiresBudgetWaitHookOnTimeout(t *testing.T) {
+	t.Parallel()
+
+	const (
+		frameBudget = int64(100)
+		readLimit   = int64(100)
+		waitTimeout = 20 * time.Millisecond
+	)
+
+	budget := semaphore.NewWeighted(frameBudget)
+	if err := budget.Acquire(t.Context(), frameBudget); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { budget.Release(frameBudget) })
+
+	reasonCh := make(chan string, 1)
+	h := newAdmissionTestHandler(frameBudget, readLimit, waitTimeout, func(reason string) {
+		reasonCh <- reason
+	})
+	h.wsConcurrentBudget = budget
+
+	if err := h.acquirePreDecode(t.Context()); err == nil {
+		t.Fatal("expected acquirePreDecode to fail when budget is exhausted")
+	}
+
+	select {
+	case reason := <-reasonCh:
+		if reason != WSAdmissionReasonBudgetWaitTimeout {
+			t.Fatalf("hook reason = %q, want %q", reason, WSAdmissionReasonBudgetWaitTimeout)
+		}
+	case <-time.After(waitTimeout + 100*time.Millisecond):
+		t.Fatal("expected admission hook to fire on budget wait timeout")
+	}
+}
+
+func TestCommitFrameBudgetFiresFrameAdmissionHookOnTimeout(t *testing.T) {
+	t.Parallel()
+
+	const (
+		frameBudget = int64(100)
+		readLimit   = int64(50)
+		waitTimeout = 20 * time.Millisecond
+	)
+
+	budget := semaphore.NewWeighted(frameBudget)
+	reasonCh := make(chan string, 1)
+	h := newAdmissionTestHandler(frameBudget, readLimit, waitTimeout, func(reason string) {
+		reasonCh <- reason
+	})
+	h.wsConcurrentBudget = budget
+
+	if err := h.acquirePreDecode(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := budget.Acquire(t.Context(), frameBudget-readLimit); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		h.releasePreDecode()
+		budget.Release(frameBudget - readLimit)
+	})
+
+	if _, err := h.commitFrameBudget(t.Context(), frameBudget); err == nil {
+		t.Fatal("expected commitFrameBudget to fail when extra budget is unavailable")
+	}
+
+	select {
+	case reason := <-reasonCh:
+		if reason != WSAdmissionReasonFrameAdmissionTimeout {
+			t.Fatalf("hook reason = %q, want %q", reason, WSAdmissionReasonFrameAdmissionTimeout)
+		}
+	case <-time.After(waitTimeout + 100*time.Millisecond):
+		t.Fatal("expected admission hook to fire on frame admission timeout")
+	}
+}
+
+func TestServerWSAdmissionBudgetWaitTimeoutFiresHook(t *testing.T) {
+	t.Parallel()
+
+	const (
+		sleepDuration = 200 * time.Millisecond
+		pad           = 48
+		waitTimeout   = 50 * time.Millisecond
+	)
+
+	srv := newTestServer()
+
+	var (
+		mu      sync.Mutex
+		reasons []string
+	)
+	srv.SetWSAdmissionEventHook(func(reason string) {
+		mu.Lock()
+		reasons = append(reasons, reason)
+		mu.Unlock()
+	})
+	srv.SetWSAdmissionTimeout(waitTimeout)
+
+	p1, p2 := net.Pipe()
+	makeMsg := func(id int) string {
+		return fmt.Sprintf(
+			`{"jsonrpc":"2.0","id":%d,"method":"test_sleep","params":[%d],"_pad":"%s"}`,
+			id, sleepDuration.Nanoseconds(), strings.Repeat("x", pad),
+		)
+	}
+	payload := makeMsg(1)
+	frameSize := int64(len(payload))
+	srv.SetReadLimits(frameSize)
+	srv.SetWSConcurrentRequestBytes(frameSize)
+
+	serveDone := make(chan struct{})
+	go func() {
+		srv.ServeCodec(NewCodec(p1), 0)
+		close(serveDone)
+	}()
+	t.Cleanup(func() {
+		p2.Close()
+		p1.Close()
+		select {
+		case <-serveDone:
+		case <-time.After(2 * time.Second):
+			t.Error("ServeCodec did not exit within 2s")
+		}
+		srv.Stop()
+	})
+
+	writeReq := func(id int) {
+		if _, err := io.WriteString(p2, makeMsg(id)); err != nil {
+			t.Fatalf("write request %d: %v", id, err)
+		}
+	}
+
+	// Request 1 holds the byte budget while it sleeps. The read loop then waits
+	// for budget before the next read and should time out, even with no second
+	// request sent.
+	writeReq(1)
+
+	deadline := time.Now().Add(waitTimeout + 300*time.Millisecond)
+	for {
+		mu.Lock()
+		got := append([]string(nil), reasons...)
+		mu.Unlock()
+		if len(got) > 0 {
+			if got[0] != WSAdmissionReasonBudgetWaitTimeout {
+				t.Fatalf("hook reason = %q, want %q", got[0], WSAdmissionReasonBudgetWaitTimeout)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected server admission hook to fire on budget wait timeout")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

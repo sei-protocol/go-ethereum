@@ -92,6 +92,8 @@ type Client struct {
 	batchResponseMaxSize int
 	wsConcurrentBudget   *semaphore.Weighted
 	readLimit            int64
+	admissionEventHook   func(reason string)
+	wsAdmissionTimeout   time.Duration
 
 	// writeConn is used for writing to the connection on the caller's goroutine. It should
 	// only be accessed outside of dispatch, with the write lock held. The write lock is
@@ -123,7 +125,7 @@ func (c *Client) newClientConn(conn ServerCodec) *clientConn {
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, clientContextKey{}, c)
 	ctx = context.WithValue(ctx, peerInfoContextKey{}, conn.peerInfo())
-	handler := newHandler(ctx, conn, c.idgen, c.services, c.batchItemLimit, c.batchResponseMaxSize, c.wsConcurrentBudget, c.readLimit)
+	handler := newHandler(ctx, conn, c.idgen, c.services, c.batchItemLimit, c.batchResponseMaxSize, c.wsConcurrentBudget, c.readLimit, c.admissionEventHook, c.wsAdmissionTimeout)
 	return &clientConn{conn, handler}
 }
 
@@ -254,6 +256,8 @@ func initClient(conn ServerCodec, services *serviceRegistry, cfg *clientConfig) 
 		batchResponseMaxSize: cfg.batchResponseLimit,
 		wsConcurrentBudget:   cfg.wsConcurrentBudget,
 		readLimit:            cfg.readLimit,
+		admissionEventHook:   cfg.admissionEventHook,
+		wsAdmissionTimeout:   cfg.wsAdmissionTimeout,
 		writeConn:            conn,
 		close:                make(chan struct{}),
 		closing:              make(chan struct{}),

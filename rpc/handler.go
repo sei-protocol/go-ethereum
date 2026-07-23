@@ -68,6 +68,11 @@ type handler struct {
 	batchResponseMaxSize int
 	wsConcurrentBudget   *semaphore.Weighted
 	readLimit            int64
+	// admissionEventHook is called when WS byte-budget admission times out (see
+	// WSAdmissionReason*). budget_wait_timeout = read loop stalled before the next
+	// read; frame_admission_timeout = decoded frame could not be admitted.
+	admissionEventHook func(reason string)
+	wsAdmissionTimeout   time.Duration
 
 	subLock    sync.Mutex
 	serverSubs map[ID]*Subscription
@@ -78,7 +83,26 @@ type callProc struct {
 	notifiers []*Notifier
 }
 
-func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *serviceRegistry, batchRequestLimit, batchResponseMaxSize int, wsConcurrentBudget *semaphore.Weighted, readLimit int64) *handler {
+const (
+	// WSAdmissionReasonBudgetWaitTimeout is emitted when the read loop times out
+	// waiting for concurrent-byte budget before attempting the next read. No frame
+	// has been read yet; this signals backpressure, not frame rejection.
+	WSAdmissionReasonBudgetWaitTimeout = "budget_wait_timeout"
+	// WSAdmissionReasonFrameAdmissionTimeout is emitted when a decoded frame
+	// cannot be admitted under the concurrent-byte budget.
+	WSAdmissionReasonFrameAdmissionTimeout = "frame_admission_timeout"
+
+	defaultWSAdmissionTimeout = 30 * time.Second
+)
+
+func wsAdmissionTimeoutOrDefault(timeout time.Duration) time.Duration {
+	if timeout > 0 {
+		return timeout
+	}
+	return defaultWSAdmissionTimeout
+}
+
+func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *serviceRegistry, batchRequestLimit, batchResponseMaxSize int, wsConcurrentBudget *semaphore.Weighted, readLimit int64, admissionEventHook func(reason string), wsAdmissionTimeout time.Duration) *handler {
 	rootCtx, cancelRoot := context.WithCancel(connCtx)
 	h := &handler{
 		reg:                  reg,
@@ -95,6 +119,8 @@ func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *
 		batchResponseMaxSize: batchResponseMaxSize,
 		wsConcurrentBudget:   wsConcurrentBudget,
 		readLimit:            readLimit,
+		admissionEventHook:   admissionEventHook,
+		wsAdmissionTimeout:   wsAdmissionTimeoutOrDefault(wsAdmissionTimeout),
 	}
 	if conn.remoteAddr() != "" {
 		h.log = h.log.New("conn", conn.remoteAddr())
@@ -103,22 +129,25 @@ func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *
 	return h
 }
 
-// wsAdmissionTimeout bounds how long a persistent connection will wait for
-// concurrent-byte budget to free up before a frame is read or committed.
-const wsAdmissionTimeout = 30 * time.Second
-
 // acquirePreDecode reserves frame budget before the codec reads/decodes the next
-// message. The wait is bounded by wsAdmissionTimeout.
+// message. The wait is bounded by the handler's wsAdmissionTimeout.
 func (h *handler) acquirePreDecode(ctx context.Context) error {
 	if h.wsConcurrentBudget == nil || h.readLimit <= 0 {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, wsAdmissionTimeout)
+	ctx, cancel := context.WithTimeout(ctx, h.wsAdmissionTimeout)
 	defer cancel()
 	if err := h.wsConcurrentBudget.Acquire(ctx, h.readLimit); err != nil {
+		h.fireAdmissionEventOnBudgetTimeout(err, WSAdmissionReasonBudgetWaitTimeout)
 		return fmt.Errorf("concurrent request byte budget exhausted: %w", err)
 	}
 	return nil
+}
+
+func (h *handler) fireAdmissionEventOnBudgetTimeout(err error, reason string) {
+	if errors.Is(err, context.DeadlineExceeded) && h.admissionEventHook != nil {
+		h.admissionEventHook(reason)
+	}
 }
 
 // releasePreDecode releases a pre-decode reservation after a failed read/decode or a
@@ -140,9 +169,10 @@ func (h *handler) commitFrameBudget(ctx context.Context, rawLen int64) (release 
 		if rawLen <= 0 {
 			return func() {}, nil
 		}
-		ctx, cancel := context.WithTimeout(ctx, wsAdmissionTimeout)
+		ctx, cancel := context.WithTimeout(ctx, h.wsAdmissionTimeout)
 		defer cancel()
 		if err := h.wsConcurrentBudget.Acquire(ctx, rawLen); err != nil {
+			h.fireAdmissionEventOnBudgetTimeout(err, WSAdmissionReasonFrameAdmissionTimeout)
 			return nil, fmt.Errorf("concurrent request byte budget exhausted: %w", err)
 		}
 		return func() { h.wsConcurrentBudget.Release(rawLen) }, nil
@@ -156,9 +186,10 @@ func (h *handler) commitFrameBudget(ctx context.Context, rawLen int64) (release 
 	case weight < h.readLimit:
 		h.wsConcurrentBudget.Release(h.readLimit - weight)
 	case weight > h.readLimit:
-		ctx, cancel := context.WithTimeout(ctx, wsAdmissionTimeout)
+		ctx, cancel := context.WithTimeout(ctx, h.wsAdmissionTimeout)
 		defer cancel()
 		if err := h.wsConcurrentBudget.Acquire(ctx, weight-h.readLimit); err != nil {
+			h.fireAdmissionEventOnBudgetTimeout(err, WSAdmissionReasonFrameAdmissionTimeout)
 			return nil, fmt.Errorf("concurrent request byte budget exhausted: %w", err)
 		}
 	}

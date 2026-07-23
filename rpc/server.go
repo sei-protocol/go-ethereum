@@ -23,6 +23,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/log"
 	"golang.org/x/sync/semaphore"
@@ -59,6 +60,8 @@ type Server struct {
 	readLimit                int64
 	wsConcurrentRequestBytes int64 // configured limit; 0 disables
 	wsConcurrentBudget       *semaphore.Weighted
+	admissionEventHook       func(reason string)
+	wsAdmissionTimeout       time.Duration
 }
 
 // NewServer creates a new server instance with no registered handlers.
@@ -113,6 +116,22 @@ func (s *Server) SetWSConcurrentRequestBytes(limit int64) {
 	s.recomputeWSConcurrentBudget()
 }
 
+// SetWSAdmissionEventHook registers a callback invoked when WS byte-budget admission
+// times out. reason is WSAdmissionReasonBudgetWaitTimeout when the read loop stalls
+// before the next read, or WSAdmissionReasonFrameAdmissionTimeout when a decoded
+// frame cannot be admitted.
+func (s *Server) SetWSAdmissionEventHook(hook func(reason string)) {
+	s.admissionEventHook = hook
+}
+
+// SetWSAdmissionTimeout bounds how long a persistent connection will wait for
+// concurrent-byte budget to free up before a frame is read or committed. Zero or
+// negative values select the default (30s). This method should be called before
+// processing any requests via Websocket server.
+func (s *Server) SetWSAdmissionTimeout(timeout time.Duration) {
+	s.wsAdmissionTimeout = timeout
+}
+
 func (s *Server) recomputeWSConcurrentBudget() {
 	limit := s.wsConcurrentRequestBytes
 	if limit <= 0 {
@@ -158,6 +177,8 @@ func (s *Server) ServeCodec(codec ServerCodec, options CodecOption) {
 		batchResponseLimit: s.batchResponseLimit,
 		wsConcurrentBudget: s.wsConcurrentBudget,
 		readLimit:          s.readLimit,
+		admissionEventHook: s.admissionEventHook,
+		wsAdmissionTimeout: s.wsAdmissionTimeout,
 	}
 	c := initClient(codec, &s.services, cfg)
 	<-codec.closed()
@@ -191,7 +212,7 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 		return
 	}
 
-	h := newHandler(ctx, codec, s.idgen, &s.services, s.batchItemLimit, s.batchResponseLimit, nil, s.readLimit)
+	h := newHandler(ctx, codec, s.idgen, &s.services, s.batchItemLimit, s.batchResponseLimit, nil, s.readLimit, nil, s.wsAdmissionTimeout)
 	h.allowSubscribe = false
 	defer h.close(io.EOF, nil)
 
