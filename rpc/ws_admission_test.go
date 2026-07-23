@@ -252,7 +252,7 @@ func TestWSAdmissionTimeoutOrDefault(t *testing.T) {
 func TestFireAdmissionEventOnBudgetTimeout(t *testing.T) {
 	t.Parallel()
 
-	const reason = WSAdmissionReasonPreDecodeTimeout
+	const reason = WSAdmissionReasonBudgetWaitTimeout
 
 	t.Run("fires on deadline exceeded", func(t *testing.T) {
 		var got string
@@ -278,7 +278,7 @@ func TestFireAdmissionEventOnBudgetTimeout(t *testing.T) {
 	})
 }
 
-func TestAcquirePreDecodeFiresHookOnTimeout(t *testing.T) {
+func TestAcquirePreDecodeFiresBudgetWaitHookOnTimeout(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -305,15 +305,15 @@ func TestAcquirePreDecodeFiresHookOnTimeout(t *testing.T) {
 
 	select {
 	case reason := <-reasonCh:
-		if reason != WSAdmissionReasonPreDecodeTimeout {
-			t.Fatalf("hook reason = %q, want %q", reason, WSAdmissionReasonPreDecodeTimeout)
+		if reason != WSAdmissionReasonBudgetWaitTimeout {
+			t.Fatalf("hook reason = %q, want %q", reason, WSAdmissionReasonBudgetWaitTimeout)
 		}
 	case <-time.After(waitTimeout + 100*time.Millisecond):
-		t.Fatal("expected admission hook to fire on pre-decode timeout")
+		t.Fatal("expected admission hook to fire on budget wait timeout")
 	}
 }
 
-func TestCommitFrameBudgetFiresHookOnTimeout(t *testing.T) {
+func TestCommitFrameBudgetFiresFrameAdmissionHookOnTimeout(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -346,15 +346,15 @@ func TestCommitFrameBudgetFiresHookOnTimeout(t *testing.T) {
 
 	select {
 	case reason := <-reasonCh:
-		if reason != WSAdmissionReasonPostDecodeTimeout {
-			t.Fatalf("hook reason = %q, want %q", reason, WSAdmissionReasonPostDecodeTimeout)
+		if reason != WSAdmissionReasonFrameAdmissionTimeout {
+			t.Fatalf("hook reason = %q, want %q", reason, WSAdmissionReasonFrameAdmissionTimeout)
 		}
 	case <-time.After(waitTimeout + 100*time.Millisecond):
-		t.Fatal("expected admission hook to fire on post-decode timeout")
+		t.Fatal("expected admission hook to fire on frame admission timeout")
 	}
 }
 
-func TestServerWSAdmissionPreDecodeTimeoutFiresHook(t *testing.T) {
+func TestServerWSAdmissionBudgetWaitTimeoutFiresHook(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -410,8 +410,9 @@ func TestServerWSAdmissionPreDecodeTimeoutFiresHook(t *testing.T) {
 		}
 	}
 
-	// Request 1 holds the byte budget while it sleeps. The server then tries to
-	// admit the next frame and should time out before we send another request.
+	// Request 1 holds the byte budget while it sleeps. The read loop then waits
+	// for budget before the next read and should time out, even with no second
+	// request sent.
 	writeReq(1)
 
 	deadline := time.Now().Add(waitTimeout + 300*time.Millisecond)
@@ -420,13 +421,13 @@ func TestServerWSAdmissionPreDecodeTimeoutFiresHook(t *testing.T) {
 		got := append([]string(nil), reasons...)
 		mu.Unlock()
 		if len(got) > 0 {
-			if got[0] != WSAdmissionReasonPreDecodeTimeout {
-				t.Fatalf("hook reason = %q, want %q", got[0], WSAdmissionReasonPreDecodeTimeout)
+			if got[0] != WSAdmissionReasonBudgetWaitTimeout {
+				t.Fatalf("hook reason = %q, want %q", got[0], WSAdmissionReasonBudgetWaitTimeout)
 			}
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("expected server admission hook to fire on pre-decode timeout")
+			t.Fatal("expected server admission hook to fire on budget wait timeout")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

@@ -117,7 +117,9 @@ func (s *Server) SetWSConcurrentRequestBytes(limit int64) {
 }
 
 // SetWSAdmissionEventHook registers a callback invoked when WS byte-budget admission
-// times out. Use the hook to emit metrics, logs, etc.
+// times out. reason is WSAdmissionReasonBudgetWaitTimeout when the read loop stalls
+// before the next read, or WSAdmissionReasonFrameAdmissionTimeout when a decoded
+// frame cannot be admitted.
 func (s *Server) SetWSAdmissionEventHook(hook func(reason string)) {
 	s.admissionEventHook = hook
 }
