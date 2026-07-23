@@ -18,6 +18,7 @@ package rpc
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/sync/semaphore"
@@ -44,6 +45,8 @@ type clientConfig struct {
 	batchResponseLimit int
 	wsConcurrentBudget *semaphore.Weighted
 	readLimit          int64
+	admissionEventHook func(reason string)
+	wsAdmissionTimeout time.Duration
 }
 
 func (cfg *clientConfig) initHeaders() {
@@ -143,5 +146,15 @@ func WithBatchItemLimit(limit int) ClientOption {
 func WithBatchResponseSizeLimit(sizeLimit int) ClientOption {
 	return optionFunc(func(cfg *clientConfig) {
 		cfg.batchResponseLimit = sizeLimit
+	})
+}
+
+// WithWSAdmissionTimeout bounds how long incoming frames wait for concurrent-byte
+// budget before admission is rejected. Zero or negative values select the default (30s).
+//
+// Note: this option applies when processing incoming frames on persistent connections.
+func WithWSAdmissionTimeout(timeout time.Duration) ClientOption {
+	return optionFunc(func(cfg *clientConfig) {
+		cfg.wsAdmissionTimeout = timeout
 	})
 }
