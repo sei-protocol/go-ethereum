@@ -185,6 +185,7 @@ type jsonCodec struct {
 	encMu   sync.Mutex       // guards the encoder
 	encode  encodeFunc       // encoder to allow multiple transports
 	conn    deadlineCloser
+	handler *handler // set by the read loop for byte-budget admission on IPC
 }
 
 type encodeFunc = func(v interface{}, isErrorResponse bool) error
@@ -230,10 +231,18 @@ func (c *jsonCodec) remoteAddr() string {
 }
 
 func (c *jsonCodec) readBatch() (messages []*jsonrpcMessage, batch bool, rawLen int64, err error) {
+	if c.handler != nil {
+		if err = c.handler.acquirePreDecode(c.handler.rootCtx); err != nil {
+			return nil, false, 0, err
+		}
+	}
 	// Decode the next JSON object in the input stream.
 	// This verifies basic syntax, etc.
 	var rawmsg json.RawMessage
-	if err := c.decode(&rawmsg); err != nil {
+	if err = c.decode(&rawmsg); err != nil {
+		if c.handler != nil {
+			c.handler.releasePreDecode()
+		}
 		return nil, false, 0, err
 	}
 	messages, batch = parseMessage(rawmsg)

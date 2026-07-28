@@ -6,13 +6,298 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"golang.org/x/sync/semaphore"
 )
+
+func wsTestURL(httpsrv *httptest.Server) string {
+	return "ws:" + strings.TrimPrefix(httpsrv.URL, "http:")
+}
+
+func startWSTestServer(t *testing.T, srv *Server) (*httptest.Server, string) {
+	t.Helper()
+	httpsrv := httptest.NewServer(srv.WebsocketHandler([]string{"*"}))
+	t.Cleanup(func() {
+		httpsrv.Close()
+		srv.Stop()
+	})
+	return httpsrv, wsTestURL(httpsrv)
+}
+
+func dialWS(t *testing.T, wsURL string) *websocket.Conn {
+	t.Helper()
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	return conn
+}
+
+func writeWSJSON(t *testing.T, conn *websocket.Conn, payload string) {
+	t.Helper()
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
+		t.Fatalf("write websocket message: %v", err)
+	}
+}
+
+func readWSJSON(t *testing.T, conn *websocket.Conn, v interface{}) {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read websocket message: %v", err)
+	}
+	conn.SetReadDeadline(time.Time{})
+	if err := json.Unmarshal(data, v); err != nil {
+		t.Fatalf("unmarshal websocket message: %v", err)
+	}
+}
+
+func makeSleepMsg(id int, sleep time.Duration, pad int) string {
+	return fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":%d,"method":"test_sleep","params":[%d],"_pad":"%s"}`,
+		id, sleep.Nanoseconds(), strings.Repeat("x", pad),
+	)
+}
+
+func TestWSIdleConnectionsDoNotHoldBudget(t *testing.T) {
+	t.Parallel()
+
+	const (
+		frameSize = 500
+		budget    = 1000
+		idleConns = 50
+	)
+
+	srv := newTestServer()
+	srv.SetReadLimits(frameSize)
+	srv.SetWSConcurrentRequestBytes(budget)
+	_, wsURL := startWSTestServer(t, srv)
+
+	conns := make([]*websocket.Conn, idleConns)
+	for i := range conns {
+		conns[i] = dialWS(t, wsURL)
+	}
+	t.Cleanup(func() {
+		for _, c := range conns {
+			c.Close()
+		}
+	})
+
+	time.Sleep(100 * time.Millisecond)
+
+	if !srv.wsConcurrentBudget.TryAcquire(budget) {
+		t.Fatal("idle websocket connections should not hold byte budget")
+	}
+	srv.wsConcurrentBudget.Release(budget)
+}
+
+func TestWSManyIdleSubscriptions(t *testing.T) {
+	t.Parallel()
+
+	const (
+		frameSize = 500
+		budget    = 1000
+		numConns  = 100
+	)
+
+	srv := newTestServer()
+	srv.SetReadLimits(frameSize)
+	srv.SetWSConcurrentRequestBytes(budget)
+	_, wsURL := startWSTestServer(t, srv)
+
+	subReq := `{"jsonrpc":"2.0","id":1,"method":"nftest_subscribe","params":["someSubscription",1,0]}`
+	conns := make([]*websocket.Conn, numConns)
+	for i := range conns {
+		conn := dialWS(t, wsURL)
+		writeWSJSON(t, conn, subReq)
+		var subResp jsonrpcMessage
+		readWSJSON(t, conn, &subResp)
+		if subResp.Error != nil {
+			t.Fatalf("subscribe failed: %v", subResp.Error)
+		}
+		conns[i] = conn
+	}
+	t.Cleanup(func() {
+		for _, c := range conns {
+			c.Close()
+		}
+	})
+
+	time.Sleep(100 * time.Millisecond)
+
+	extra := dialWS(t, wsURL)
+	writeWSJSON(t, extra, makeSleepMsg(99, 10*time.Millisecond, 48))
+	var resp jsonrpcMessage
+	readWSJSON(t, extra, &resp)
+	if resp.Error != nil {
+		t.Fatalf("extra connection request failed: %v", resp.Error)
+	}
+}
+
+func TestWSBudgetAcquiredOnlyOnFrame(t *testing.T) {
+	t.Parallel()
+
+	const (
+		sleepDuration = 200 * time.Millisecond
+		pad           = 48
+	)
+
+	srv := newTestServer()
+	payload := makeSleepMsg(1, sleepDuration, pad)
+	frameSize := int64(len(payload))
+	srv.SetReadLimits(frameSize)
+	srv.SetWSConcurrentRequestBytes(frameSize)
+	_, wsURL := startWSTestServer(t, srv)
+
+	conn := dialWS(t, wsURL)
+	writeWSJSON(t, conn, payload)
+
+	held := false
+	deadline := time.Now().Add(sleepDuration)
+	for time.Now().Before(deadline) {
+		if !srv.wsConcurrentBudget.TryAcquire(frameSize) {
+			held = true
+			break
+		}
+		srv.wsConcurrentBudget.Release(frameSize)
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !held {
+		t.Fatal("byte budget should be held while the first frame is in flight")
+	}
+
+	var resp jsonrpcMessage
+	readWSJSON(t, conn, &resp)
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %v", resp.Error)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if !srv.wsConcurrentBudget.TryAcquire(frameSize) {
+		t.Fatal("byte budget should be fully available while blocked waiting for the next frame")
+	}
+	srv.wsConcurrentBudget.Release(frameSize)
+}
+
+func TestWSLargeFrameRejectedByReadLimit(t *testing.T) {
+	t.Parallel()
+
+	const (
+		readLimit = 256
+		budget    = 1024
+	)
+
+	srv := newTestServer()
+	srv.SetReadLimits(readLimit)
+	srv.SetWSConcurrentRequestBytes(budget)
+	_, wsURL := startWSTestServer(t, srv)
+
+	conn := dialWS(t, wsURL)
+	oversized := fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":1,"method":"test_echo","params":["%s"]}`,
+		strings.Repeat("x", readLimit),
+	)
+	writeWSJSON(t, conn, oversized)
+
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("expected connection to close after oversized frame")
+	}
+
+	if !srv.wsConcurrentBudget.TryAcquire(budget) {
+		t.Fatal("byte budget should be unchanged after read-limit rejection")
+	}
+	srv.wsConcurrentBudget.Release(budget)
+}
+
+func TestWSConcurrentLargeFrames(t *testing.T) {
+	t.Parallel()
+
+	const (
+		sleepDuration = 200 * time.Millisecond
+		pad           = 48
+	)
+
+	srv := newTestServer()
+	payload := makeSleepMsg(1, sleepDuration, pad)
+	frameSize := int64(len(payload))
+	srv.SetReadLimits(frameSize)
+	srv.SetWSConcurrentRequestBytes(frameSize)
+
+	_, wsURL := startWSTestServer(t, srv)
+	conn := dialWS(t, wsURL)
+
+	writeWSJSON(t, conn, makeSleepMsg(1, sleepDuration, pad))
+	writeWSJSON(t, conn, makeSleepMsg(2, sleepDuration, pad))
+
+	var firstResp jsonrpcMessage
+	readWSJSON(t, conn, &firstResp)
+	if string(firstResp.ID) != "1" {
+		t.Fatalf("expected first response id 1, got %s", string(firstResp.ID))
+	}
+
+	var secondResp jsonrpcMessage
+	readWSJSON(t, conn, &secondResp)
+	if string(secondResp.ID) != "2" {
+		t.Fatalf("expected second response id 2, got %s", string(secondResp.ID))
+	}
+}
+
+func TestWSBudgetWaitTimeoutOnActiveBurst(t *testing.T) {
+	t.Parallel()
+
+	const (
+		sleepDuration = 200 * time.Millisecond
+		pad           = 48
+		waitTimeout   = 50 * time.Millisecond
+	)
+
+	srv := newTestServer()
+	var (
+		mu      sync.Mutex
+		reasons []string
+	)
+	srv.SetWSAdmissionEventHook(func(reason string) {
+		mu.Lock()
+		reasons = append(reasons, reason)
+		mu.Unlock()
+	})
+	srv.SetWSAdmissionTimeout(waitTimeout)
+
+	payload := makeSleepMsg(1, sleepDuration, pad)
+	frameSize := int64(len(payload))
+	srv.SetReadLimits(frameSize)
+	srv.SetWSConcurrentRequestBytes(frameSize)
+	_, wsURL := startWSTestServer(t, srv)
+
+	conn := dialWS(t, wsURL)
+	writeWSJSON(t, conn, makeSleepMsg(1, sleepDuration, pad))
+	writeWSJSON(t, conn, makeSleepMsg(2, sleepDuration, pad))
+
+	deadline := time.Now().Add(waitTimeout + 300*time.Millisecond)
+	for {
+		mu.Lock()
+		got := append([]string(nil), reasons...)
+		mu.Unlock()
+		if len(got) > 0 {
+			if got[0] != WSAdmissionReasonBudgetWaitTimeout {
+				t.Fatalf("hook reason = %q, want %q", got[0], WSAdmissionReasonBudgetWaitTimeout)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected admission hook to fire when a second frame waits on budget")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 func TestWSConcurrentRequestBytesSingleInFlight(t *testing.T) {
 	t.Parallel()
@@ -376,44 +661,37 @@ func TestServerWSAdmissionBudgetWaitTimeoutFiresHook(t *testing.T) {
 	})
 	srv.SetWSAdmissionTimeout(waitTimeout)
 
-	p1, p2 := net.Pipe()
-	makeMsg := func(id int) string {
-		return fmt.Sprintf(
-			`{"jsonrpc":"2.0","id":%d,"method":"test_sleep","params":[%d],"_pad":"%s"}`,
-			id, sleepDuration.Nanoseconds(), strings.Repeat("x", pad),
-		)
-	}
-	payload := makeMsg(1)
+	payload := makeSleepMsg(1, sleepDuration, pad)
 	frameSize := int64(len(payload))
 	srv.SetReadLimits(frameSize)
 	srv.SetWSConcurrentRequestBytes(frameSize)
+	_, wsURL := startWSTestServer(t, srv)
 
-	serveDone := make(chan struct{})
-	go func() {
-		srv.ServeCodec(NewCodec(p1), 0)
-		close(serveDone)
-	}()
-	t.Cleanup(func() {
-		p2.Close()
-		p1.Close()
-		select {
-		case <-serveDone:
-		case <-time.After(2 * time.Second):
-			t.Error("ServeCodec did not exit within 2s")
-		}
-		srv.Stop()
-	})
+	conn := dialWS(t, wsURL)
+	writeWSJSON(t, conn, payload)
 
-	writeReq := func(id int) {
-		if _, err := io.WriteString(p2, makeMsg(id)); err != nil {
-			t.Fatalf("write request %d: %v", id, err)
-		}
+	var firstResp jsonrpcMessage
+	readWSJSON(t, conn, &firstResp)
+	if firstResp.Error != nil {
+		t.Fatalf("unexpected error: %v", firstResp.Error)
 	}
 
-	// Request 1 holds the byte budget while it sleeps. The read loop then waits
-	// for budget before the next read and should time out, even with no second
-	// request sent.
-	writeReq(1)
+	// After the first request completes the read loop blocks in NextReader without
+	// holding budget. The hook must not fire while idle.
+	idleDeadline := time.Now().Add(waitTimeout + 200*time.Millisecond)
+	for time.Now().Before(idleDeadline) {
+		mu.Lock()
+		got := append([]string(nil), reasons...)
+		mu.Unlock()
+		if len(got) > 0 {
+			t.Fatalf("hook fired while idle in NextReader: %v", got)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Hold budget again and send a second frame while it is exhausted.
+	writeWSJSON(t, conn, makeSleepMsg(2, sleepDuration, pad))
+	writeWSJSON(t, conn, makeSleepMsg(3, sleepDuration, pad))
 
 	deadline := time.Now().Add(waitTimeout + 300*time.Millisecond)
 	for {

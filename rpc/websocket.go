@@ -19,6 +19,7 @@ package rpc
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -283,8 +284,9 @@ func wsClientHeaders(endpoint, origin string) (string, http.Header, error) {
 
 type websocketCodec struct {
 	*jsonCodec
-	conn *websocket.Conn
-	info PeerInfo
+	conn    *websocket.Conn
+	handler *handler // set by the read loop for byte-budget admission
+	info    PeerInfo
 
 	wg           sync.WaitGroup
 	pingReset    chan struct{}
@@ -321,6 +323,32 @@ func newWebsocketCodec(conn *websocket.Conn, host string, req http.Header, readL
 	wc.wg.Add(1)
 	go wc.pingLoop()
 	return wc
+}
+
+func (wc *websocketCodec) readBatch() ([]*jsonrpcMessage, bool, int64, error) {
+	_, r, err := wc.conn.NextReader()
+	if err != nil {
+		return nil, false, 0, err
+	}
+	if wc.handler != nil {
+		if err := wc.handler.acquirePreDecode(wc.handler.rootCtx); err != nil {
+			return nil, false, 0, err
+		}
+	}
+	var rawmsg json.RawMessage
+	if err := json.NewDecoder(r).Decode(&rawmsg); err != nil {
+		if wc.handler != nil {
+			wc.handler.releasePreDecode()
+		}
+		return nil, false, 0, err
+	}
+	messages, batch := parseMessage(rawmsg)
+	for i, msg := range messages {
+		if msg == nil {
+			messages[i] = new(jsonrpcMessage)
+		}
+	}
+	return messages, batch, int64(len(rawmsg)), nil
 }
 
 func (wc *websocketCodec) close() {

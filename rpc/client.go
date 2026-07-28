@@ -126,7 +126,17 @@ func (c *Client) newClientConn(conn ServerCodec) *clientConn {
 	ctx = context.WithValue(ctx, clientContextKey{}, c)
 	ctx = context.WithValue(ctx, peerInfoContextKey{}, conn.peerInfo())
 	handler := newHandler(ctx, conn, c.idgen, c.services, c.batchItemLimit, c.batchResponseMaxSize, c.wsConcurrentBudget, c.readLimit, c.admissionEventHook, c.wsAdmissionTimeout)
+	attachBudgetHandler(conn, handler)
 	return &clientConn{conn, handler}
+}
+
+func attachBudgetHandler(codec ServerCodec, h *handler) {
+	switch c := codec.(type) {
+	case *jsonCodec:
+		c.handler = h
+	case *websocketCodec:
+		c.handler = h
+	}
 }
 
 func (cc *clientConn) close(err error, inflightReq *requestOp) {
@@ -727,13 +737,8 @@ func (c *Client) read(conn *clientConn) {
 	codec := conn.codec
 	h := conn.handler
 	for {
-		if err := h.acquirePreDecode(h.rootCtx); err != nil {
-			c.readErr <- err
-			return
-		}
 		msgs, batch, rawLen, err := codec.readBatch()
 		if err != nil {
-			h.releasePreDecode()
 			var syntaxErr *json.SyntaxError
 			if errors.As(err, &syntaxErr) {
 				msg := errorMessage(&parseError{err.Error()})
