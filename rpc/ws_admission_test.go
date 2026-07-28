@@ -217,6 +217,48 @@ func TestWSLargeFrameRejectedByReadLimit(t *testing.T) {
 	srv.wsConcurrentBudget.Release(budget)
 }
 
+func TestWSOversizeFrameFiresAdmissionHook(t *testing.T) {
+	t.Parallel()
+
+	const (
+		readLimit = 256
+		budget    = 1024
+	)
+
+	var (
+		mu      sync.Mutex
+		reasons []string
+	)
+	srv := newTestServer()
+	srv.SetWSAdmissionEventHook(func(reason string) {
+		mu.Lock()
+		reasons = append(reasons, reason)
+		mu.Unlock()
+	})
+	srv.SetReadLimits(readLimit)
+	srv.SetWSConcurrentRequestBytes(budget)
+	_, wsURL := startWSTestServer(t, srv)
+
+	conn := dialWS(t, wsURL)
+	oversized := fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":1,"method":"test_echo","params":["%s"]}`,
+		strings.Repeat("x", readLimit),
+	)
+	writeWSJSON(t, conn, oversized)
+
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("expected connection to close after oversized frame")
+	}
+
+	mu.Lock()
+	got := append([]string(nil), reasons...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != WSAdmissionReasonOversizeFrame {
+		t.Fatalf("admission hook reasons = %v, want [%q]", got, WSAdmissionReasonOversizeFrame)
+	}
+}
+
 func TestWSConcurrentLargeFrames(t *testing.T) {
 	t.Parallel()
 

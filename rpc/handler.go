@@ -91,6 +91,9 @@ const (
 	// WSAdmissionReasonFrameAdmissionTimeout is emitted when a decoded frame
 	// cannot be admitted under the concurrent-byte budget.
 	WSAdmissionReasonFrameAdmissionTimeout = "frame_admission_timeout"
+	// WSAdmissionReasonOversizeFrame is emitted when gorilla's read limit rejects
+	// an incoming frame before it is ever decoded (frame size > readLimit).
+	WSAdmissionReasonOversizeFrame = "oversize_frame"
 
 	defaultWSAdmissionTimeout = 30 * time.Second
 )

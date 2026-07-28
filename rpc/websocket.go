@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -327,6 +328,9 @@ func newWebsocketCodec(conn *websocket.Conn, host string, req http.Header, readL
 func (wc *websocketCodec) readBatch() ([]*jsonrpcMessage, bool, int64, error) {
 	_, r, err := wc.conn.NextReader()
 	if err != nil {
+		if errors.Is(err, websocket.ErrReadLimit) && wc.handler != nil && wc.handler.admissionEventHook != nil {
+			wc.handler.admissionEventHook(WSAdmissionReasonOversizeFrame)
+		}
 		return nil, false, 0, err
 	}
 	if wc.handler != nil {
