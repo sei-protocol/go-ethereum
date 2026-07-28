@@ -221,6 +221,13 @@ func NewCodec(conn Conn) ServerCodec {
 	return NewFuncCodec(conn, encode, dec.Decode)
 }
 
+// setBudgetHandler wires in the handler used for byte-budget admission. It is called
+// once, before the read loop starts, by websocketCodec (via embedding) and jsonCodec
+// itself (for IPC).
+func (c *jsonCodec) setBudgetHandler(h *handler) {
+	c.handler = h
+}
+
 func (c *jsonCodec) peerInfo() PeerInfo {
 	// This returns "ipc" because all other built-in transports have a separate codec type.
 	return PeerInfo{Transport: "ipc", RemoteAddr: c.remote}

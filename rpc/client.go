@@ -130,12 +130,15 @@ func (c *Client) newClientConn(conn ServerCodec) *clientConn {
 	return &clientConn{conn, handler}
 }
 
+// budgetHandlerSetter is implemented by codecs that need the handler wired in for
+// byte-budget admission (jsonCodec and, via embedding, websocketCodec).
+type budgetHandlerSetter interface {
+	setBudgetHandler(h *handler)
+}
+
 func attachBudgetHandler(codec ServerCodec, h *handler) {
-	switch c := codec.(type) {
-	case *jsonCodec:
-		c.handler = h
-	case *websocketCodec:
-		c.handler = h
+	if c, ok := codec.(budgetHandlerSetter); ok {
+		c.setBudgetHandler(h)
 	}
 }
 
