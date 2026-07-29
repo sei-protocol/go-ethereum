@@ -185,7 +185,7 @@ type jsonCodec struct {
 	encMu   sync.Mutex       // guards the encoder
 	encode  encodeFunc       // encoder to allow multiple transports
 	conn    deadlineCloser
-	handler *handler // set by the read loop for byte-budget admission on IPC
+	handler *handler // set by the read loop for byte-budget admission
 }
 
 type encodeFunc = func(v interface{}, isErrorResponse bool) error
@@ -221,9 +221,7 @@ func NewCodec(conn Conn) ServerCodec {
 	return NewFuncCodec(conn, encode, dec.Decode)
 }
 
-// setBudgetHandler wires in the handler used for byte-budget admission. It is called
-// once, before the read loop starts, by websocketCodec (via embedding) and jsonCodec
-// itself (for IPC).
+// setBudgetHandler wires in the handler used for byte-budget admission.
 func (c *jsonCodec) setBudgetHandler(h *handler) {
 	c.handler = h
 }

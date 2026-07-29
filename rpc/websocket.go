@@ -284,9 +284,9 @@ func wsClientHeaders(endpoint, origin string) (string, http.Header, error) {
 }
 
 type websocketCodec struct {
-	*jsonCodec // also carries the handler set by the read loop for byte-budget admission
-	conn       *websocket.Conn
-	info       PeerInfo
+	*jsonCodec
+	conn *websocket.Conn
+	info PeerInfo
 
 	wg           sync.WaitGroup
 	pingReset    chan struct{}
