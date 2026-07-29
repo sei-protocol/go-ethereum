@@ -356,6 +356,9 @@ func (wc *websocketCodec) readBatch() ([]*jsonrpcMessage, bool, int64, error) {
 	return messages, batch, int64(len(rawmsg)), nil
 }
 
+// fireOversizeFrameHook reports a frame rejected by gorilla's read-limit enforcement
+// to the admission event hook. No JSON-RPC response is written for this case: gorilla
+// already sends a close(1009, "message too big") handshake to the peer on its own.
 func (wc *websocketCodec) fireOversizeFrameHook(err error) {
 	if errors.Is(err, websocket.ErrReadLimit) && wc.handler != nil && wc.handler.admissionEventHook != nil {
 		wc.handler.admissionEventHook(WSAdmissionReasonOversizeFrame)

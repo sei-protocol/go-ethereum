@@ -743,9 +743,16 @@ func (c *Client) read(conn *clientConn) {
 		msgs, batch, rawLen, err := codec.readBatch()
 		if err != nil {
 			var syntaxErr *json.SyntaxError
-			if errors.As(err, &syntaxErr) {
+			switch {
+			case errors.As(err, &syntaxErr):
 				msg := errorMessage(&parseError{err.Error()})
 				codec.writeJSON(context.Background(), msg, true)
+			case errors.Is(err, errBudgetWaitTimeout):
+				msg := errorMessage(&internalServerError{errcodeBudgetWaitTimeout, errMsgBudgetWaitTimeout})
+				codec.writeJSON(context.Background(), msg, true)
+				// Oversize WS frames need no explicit response here: gorilla's own
+				// read-limit enforcement already sends a close(1009, "message too big")
+				// handshake to the peer before this error ever reaches the read loop.
 			}
 			c.readErr <- err
 			return

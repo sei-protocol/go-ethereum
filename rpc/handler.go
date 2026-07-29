@@ -142,7 +142,7 @@ func (h *handler) acquirePreDecode(ctx context.Context) error {
 	defer cancel()
 	if err := h.wsConcurrentBudget.Acquire(ctx, h.readLimit); err != nil {
 		h.fireAdmissionEventOnBudgetTimeout(err, WSAdmissionReasonBudgetWaitTimeout)
-		return fmt.Errorf("concurrent request byte budget exhausted: %w", err)
+		return fmt.Errorf("%w: %w", errBudgetWaitTimeout, err)
 	}
 	return nil
 }
