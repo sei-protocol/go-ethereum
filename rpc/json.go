@@ -236,6 +236,8 @@ func (c *jsonCodec) remoteAddr() string {
 }
 
 func (c *jsonCodec) readBatch() (messages []*jsonrpcMessage, batch bool, rawLen int64, err error) {
+	// Unlike websocketCodec, this reserves budget before the blocking read for the
+	// next message, so an idle IPC/stdio connection still holds it indefinitely.
 	if c.handler != nil {
 		if err = c.handler.acquirePreDecode(c.handler.rootCtx); err != nil {
 			return nil, false, 0, err

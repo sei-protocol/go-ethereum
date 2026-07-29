@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -340,6 +341,10 @@ func (wc *websocketCodec) readBatch() ([]*jsonrpcMessage, bool, int64, error) {
 	if err := json.NewDecoder(r).Decode(&rawmsg); err != nil {
 		if wc.handler != nil {
 			wc.handler.releasePreDecode()
+		}
+		// Match gorilla's ReadJSON: don't let an empty frame look like a clean EOF.
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
 		}
 		// A message split across continuation frames only crosses gorilla's read
 		// limit once enough frames have arrived, so ErrReadLimit can surface here

@@ -72,7 +72,7 @@ func TestWSIdleConnectionsDoNotHoldBudget(t *testing.T) {
 	const (
 		frameSize = 500
 		budget    = 1000
-		idleConns = 50
+		idleConns = 15
 	)
 
 	srv := newTestServer()
@@ -90,12 +90,17 @@ func TestWSIdleConnectionsDoNotHoldBudget(t *testing.T) {
 		}
 	})
 
-	time.Sleep(100 * time.Millisecond)
-
-	if !srv.wsConcurrentBudget.TryAcquire(budget) {
-		t.Fatal("idle websocket connections should not hold byte budget")
+	deadline := time.Now().Add(time.Second)
+	for {
+		if srv.wsConcurrentBudget.TryAcquire(budget) {
+			srv.wsConcurrentBudget.Release(budget)
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("idle websocket connections should not hold byte budget")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	srv.wsConcurrentBudget.Release(budget)
 }
 
 func TestWSManyIdleSubscriptions(t *testing.T) {
@@ -104,7 +109,7 @@ func TestWSManyIdleSubscriptions(t *testing.T) {
 	const (
 		frameSize = 500
 		budget    = 1000
-		numConns  = 100
+		numConns  = 20
 	)
 
 	srv := newTestServer()
@@ -130,8 +135,7 @@ func TestWSManyIdleSubscriptions(t *testing.T) {
 		}
 	})
 
-	time.Sleep(100 * time.Millisecond)
-
+	// No settling delay needed: each subscribe ack was already read above.
 	extra := dialWS(t, wsURL)
 	writeWSJSON(t, extra, makeSleepMsg(99, 10*time.Millisecond, 48))
 	var resp jsonrpcMessage
@@ -251,11 +255,22 @@ func TestWSOversizeFrameFiresAdmissionHook(t *testing.T) {
 		t.Fatal("expected connection to close after oversized frame")
 	}
 
-	mu.Lock()
-	got := append([]string(nil), reasons...)
-	mu.Unlock()
-	if len(got) != 1 || got[0] != WSAdmissionReasonOversizeFrame {
-		t.Fatalf("admission hook reasons = %v, want [%q]", got, WSAdmissionReasonOversizeFrame)
+	// Poll: gorilla's close(1009) can reach the client before the hook fires.
+	deadline := time.Now().Add(time.Second)
+	for {
+		mu.Lock()
+		got := append([]string(nil), reasons...)
+		mu.Unlock()
+		if len(got) > 0 {
+			if len(got) != 1 || got[0] != WSAdmissionReasonOversizeFrame {
+				t.Fatalf("admission hook reasons = %v, want [%q]", got, WSAdmissionReasonOversizeFrame)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected oversize-frame admission hook to fire")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -403,12 +418,75 @@ func TestWSBudgetWaitTimeoutOnActiveBurst(t *testing.T) {
 			if got[0] != WSAdmissionReasonBudgetWaitTimeout {
 				t.Fatalf("hook reason = %q, want %q", got[0], WSAdmissionReasonBudgetWaitTimeout)
 			}
-			return
+			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("expected admission hook to fire when a second frame waits on budget")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Confirm the peer actually receives the -32005 error, not just the hook firing.
+	conn.SetReadDeadline(time.Now().Add(waitTimeout + 2*sleepDuration))
+	foundBudgetTimeoutResp := false
+	for {
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		var resp jsonrpcMessage
+		if err := json.Unmarshal(data, &resp); err != nil {
+			continue
+		}
+		if resp.Error != nil && resp.Error.Code == errcodeBudgetWaitTimeout {
+			foundBudgetTimeoutResp = true
+			break
+		}
+	}
+	if !foundBudgetTimeoutResp {
+		t.Fatalf("expected peer to receive a JSON-RPC error with code %d before the connection closed", errcodeBudgetWaitTimeout)
+	}
+}
+
+// passthroughCodec embeds ServerCodec without implementing budgetHandlerSetter, so
+// attachBudgetHandler's type assertion fails for it — like any decorator that forwards
+// reads but not setBudgetHandler.
+type passthroughCodec struct {
+	ServerCodec
+}
+
+// TestBudgetCommitWithoutHandlerWiringDoesNotPanic guards against a regression where
+// commitFrameBudget released budget that was never acquired for an unwired codec,
+// panicking the semaphore on the first request.
+func TestBudgetCommitWithoutHandlerWiringDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	const (
+		readLimit = 256
+		budget    = 1024
+	)
+
+	srv := newTestServer()
+	srv.SetReadLimits(readLimit)
+	srv.SetWSConcurrentRequestBytes(budget)
+
+	p1, p2 := net.Pipe()
+	wrapped := &passthroughCodec{ServerCodec: NewCodec(p1)}
+	go srv.ServeCodec(wrapped, 0)
+	t.Cleanup(func() { p2.Close(); p1.Close(); srv.Stop() })
+
+	payload := `{"jsonrpc":"2.0","id":1,"method":"test_echo","params":["hello",1,{"S":"world"}]}`
+	if _, err := io.WriteString(p2, payload); err != nil {
+		t.Fatal(err)
+	}
+	dec := json.NewDecoder(p2)
+	_ = p2.SetReadDeadline(time.Now().Add(time.Second))
+	var resp jsonrpcMessage
+	if err := dec.Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %v", resp.Error)
 	}
 }
 

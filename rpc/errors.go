@@ -24,7 +24,7 @@ import (
 // errBudgetWaitTimeout is a sentinel error that the handler wraps its pre-decode
 // budget-acquire error in, so the read loop can recognize an admission-control
 // rejection and report it to the peer before closing the connection.
-var errBudgetWaitTimeout = errors.New("timed out waiting for concurrent request-byte budget")
+var errBudgetWaitTimeout = errors.New(errMsgBudgetWaitTimeout)
 
 // HTTPError is returned by client operations when the HTTP status code of the
 // response is not a 2xx status.

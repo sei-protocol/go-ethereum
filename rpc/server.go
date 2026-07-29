@@ -111,6 +111,9 @@ func (s *Server) SetReadLimits(limit int64) {
 // frames on persistent connections (WebSocket, IPC, stdio) that may be read and
 // processed concurrently, weighted by each frame's size. Set to 0 to disable the limit.
 // This method should be called before processing any requests via Websocket server.
+//
+// Note: idle connections avoid holding this budget on WebSocket only; idle
+// IPC/stdio connections still hold readLimit bytes indefinitely.
 func (s *Server) SetWSConcurrentRequestBytes(limit int64) {
 	s.wsConcurrentRequestBytes = limit
 	s.recomputeWSConcurrentBudget()
