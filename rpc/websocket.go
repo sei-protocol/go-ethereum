@@ -292,6 +292,12 @@ type websocketCodec struct {
 	wg           sync.WaitGroup
 	pingReset    chan struct{}
 	pongReceived chan struct{}
+
+	// decodeReadActive is true while a frame is being decoded after pre-decode budget
+	// has been reserved. It is guarded by jsonCodec.encMu, the same lock pingLoop
+	// already holds around its own SetReadDeadline calls, so pingLoop's pong-triggered
+	// deadline clear can never race past a decode-owned deadline.
+	decodeReadActive bool
 }
 
 func newWebsocketCodec(conn *websocket.Conn, host string, req http.Header, readLimit int64) ServerCodec {
@@ -336,6 +342,10 @@ func (wc *websocketCodec) readBatch() ([]*jsonrpcMessage, bool, int64, error) {
 		if err := wc.handler.acquirePreDecode(wc.handler.rootCtx); err != nil {
 			return nil, false, 0, err
 		}
+		if wc.handler.preDecodeHeld {
+			wc.beginDecodeRead(wc.handler.wsAdmissionTimeout)
+			defer wc.endDecodeRead()
+		}
 	}
 	var rawmsg json.RawMessage
 	if err := json.NewDecoder(r).Decode(&rawmsg); err != nil {
@@ -359,6 +369,32 @@ func (wc *websocketCodec) readBatch() ([]*jsonrpcMessage, bool, int64, error) {
 		}
 	}
 	return messages, batch, int64(len(rawmsg)), nil
+}
+
+// beginDecodeRead arms a read deadline bounding how long a frame may take to finish
+// arriving once pre-decode budget has been reserved for it, so a peer that stalls
+// mid-message (and keeps ponging to defeat pingLoop's own liveness deadline) cannot
+// hold that budget indefinitely.
+func (wc *websocketCodec) beginDecodeRead(timeout time.Duration) {
+	if timeout <= 0 {
+		return
+	}
+	wc.jsonCodec.encMu.Lock()
+	defer wc.jsonCodec.encMu.Unlock()
+	wc.decodeReadActive = true
+	wc.conn.SetReadDeadline(time.Now().Add(timeout))
+}
+
+// endDecodeRead clears the deadline armed by beginDecodeRead once the frame has been
+// fully read (successfully or not).
+func (wc *websocketCodec) endDecodeRead() {
+	wc.jsonCodec.encMu.Lock()
+	defer wc.jsonCodec.encMu.Unlock()
+	if !wc.decodeReadActive {
+		return
+	}
+	wc.decodeReadActive = false
+	wc.conn.SetReadDeadline(time.Time{})
 }
 
 // fireOversizeFrameHook reports a frame rejected by gorilla's read-limit enforcement
@@ -412,12 +448,21 @@ func (wc *websocketCodec) pingLoop() {
 			wc.jsonCodec.encMu.Lock()
 			wc.conn.SetWriteDeadline(time.Now().Add(wsPingWriteTimeout))
 			wc.conn.WriteMessage(websocket.PingMessage, nil)
-			wc.conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
+			// A frame being decoded already owns the read deadline; don't override it
+			// with the longer pong-liveness deadline, or a stalling peer that keeps
+			// ponging could ride out the decode bound indefinitely.
+			if !wc.decodeReadActive {
+				wc.conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
+			}
 			wc.jsonCodec.encMu.Unlock()
 			pingTimer.Reset(wsPingInterval)
 
 		case <-wc.pongReceived:
-			wc.conn.SetReadDeadline(time.Time{})
+			wc.jsonCodec.encMu.Lock()
+			if !wc.decodeReadActive {
+				wc.conn.SetReadDeadline(time.Time{})
+			}
+			wc.jsonCodec.encMu.Unlock()
 		}
 	}
 }

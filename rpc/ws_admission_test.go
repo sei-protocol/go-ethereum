@@ -190,6 +190,73 @@ func TestWSBudgetAcquiredOnlyOnFrame(t *testing.T) {
 	srv.wsConcurrentBudget.Release(frameSize)
 }
 
+// TestWSPartialFrameStallReleasesBudget verifies that a peer which sends only the
+// first fragment of a message and then stalls cannot hold pre-decode budget
+// indefinitely: once wsAdmissionTimeout elapses since the first frame arrived, the
+// server must abandon the read and release the reservation, even though the
+// connection is otherwise alive.
+func TestWSPartialFrameStallReleasesBudget(t *testing.T) {
+	t.Parallel()
+
+	const (
+		waitTimeout = 50 * time.Millisecond
+		readLimit   = 256
+		budget      = 256
+	)
+
+	srv := newTestServer()
+	srv.SetWSAdmissionTimeout(waitTimeout)
+	srv.SetReadLimits(readLimit)
+	srv.SetWSConcurrentRequestBytes(budget)
+	_, wsURL := startWSTestServer(t, srv)
+
+	// A small write buffer forces the partial payload onto the wire immediately;
+	// with the default dialer buffer the bytes would never leave the client.
+	dialer := &websocket.Dialer{WriteBufferSize: 1}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	w, err := conn.NextWriter(websocket.TextMessage)
+	if err != nil {
+		t.Fatalf("next writer: %v", err)
+	}
+	if _, err := w.Write([]byte(`{"jsonrpc":"2.0",`)); err != nil {
+		t.Fatalf("write partial frame: %v", err)
+	}
+	// Deliberately never call w.Close() or send the rest of the message: the
+	// server has read the first fragment (NextReader returned) and reserved
+	// budget for it, but the message never finishes arriving.
+
+	budgetHeld := false
+	holdDeadline := time.Now().Add(time.Second)
+	for time.Now().Before(holdDeadline) {
+		if !srv.wsConcurrentBudget.TryAcquire(budget) {
+			budgetHeld = true
+			break
+		}
+		srv.wsConcurrentBudget.Release(budget)
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !budgetHeld {
+		t.Fatal("budget should be held while partial frame is stalled")
+	}
+
+	releaseDeadline := time.Now().Add(waitTimeout + time.Second)
+	for {
+		if srv.wsConcurrentBudget.TryAcquire(budget) {
+			srv.wsConcurrentBudget.Release(budget)
+			return
+		}
+		if time.Now().After(releaseDeadline) {
+			t.Fatal("budget reserved for a stalled partial frame should be released after wsAdmissionTimeout")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestWSLargeFrameRejectedByReadLimit(t *testing.T) {
 	t.Parallel()
 
@@ -357,13 +424,30 @@ func TestWSConcurrentLargeFrames(t *testing.T) {
 	payload := makeSleepMsg(1, sleepDuration, pad)
 	frameSize := int64(len(payload))
 	srv.SetReadLimits(frameSize)
-	srv.SetWSConcurrentRequestBytes(frameSize)
+	srv.SetWSConcurrentRequestBytes(2 * frameSize)
 
 	_, wsURL := startWSTestServer(t, srv)
 	conn := dialWS(t, wsURL)
+	t.Cleanup(func() { conn.Close() })
 
 	writeWSJSON(t, conn, makeSleepMsg(1, sleepDuration, pad))
 	writeWSJSON(t, conn, makeSleepMsg(2, sleepDuration, pad))
+
+	// With budget == frameSize the two requests would serialize; with 2*frameSize
+	// both should hold budget while test_sleep runs.
+	overlapDeadline := time.Now().Add(sleepDuration)
+	var overlapped bool
+	for time.Now().Before(overlapDeadline) {
+		if !srv.wsConcurrentBudget.TryAcquire(frameSize) {
+			overlapped = true
+			break
+		}
+		srv.wsConcurrentBudget.Release(frameSize)
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !overlapped {
+		t.Fatal("expected two large frames to hold byte budget concurrently")
+	}
 
 	var firstResp jsonrpcMessage
 	readWSJSON(t, conn, &firstResp)
@@ -406,6 +490,7 @@ func TestWSBudgetWaitTimeoutOnActiveBurst(t *testing.T) {
 	_, wsURL := startWSTestServer(t, srv)
 
 	conn := dialWS(t, wsURL)
+	t.Cleanup(func() { conn.Close() })
 	writeWSJSON(t, conn, makeSleepMsg(1, sleepDuration, pad))
 	writeWSJSON(t, conn, makeSleepMsg(2, sleepDuration, pad))
 
@@ -830,6 +915,45 @@ func TestCommitFrameBudgetFiresFrameAdmissionHookOnTimeout(t *testing.T) {
 	}
 }
 
+// TestCommitFrameBudgetFailureReleasesPreDecodeBudget guards against a regression
+// where commitFrameBudget cleared preDecodeHeld before a failable Acquire for
+// weight > readLimit, making the caller's releasePreDecode a no-op and permanently
+// leaking readLimit bytes from the server-wide semaphore.
+func TestCommitFrameBudgetFailureReleasesPreDecodeBudget(t *testing.T) {
+	t.Parallel()
+
+	const (
+		frameBudget = int64(100)
+		readLimit   = int64(50)
+		waitTimeout = 20 * time.Millisecond
+	)
+
+	budget := semaphore.NewWeighted(frameBudget)
+	h := newAdmissionTestHandler(frameBudget, readLimit, waitTimeout, nil)
+	h.wsConcurrentBudget = budget
+
+	if err := h.acquirePreDecode(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// Leave no room for the extra Acquire inside commitFrameBudget.
+	if err := budget.Acquire(t.Context(), frameBudget-readLimit); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.commitFrameBudget(t.Context(), frameBudget); err == nil {
+		t.Fatal("expected commitFrameBudget to fail when extra budget is unavailable")
+	}
+
+	// Mirror Client.read's error path.
+	h.releasePreDecode()
+	budget.Release(frameBudget - readLimit)
+
+	if !budget.TryAcquire(frameBudget) {
+		t.Fatal("pre-decode reservation should be released after failed commitFrameBudget")
+	}
+	budget.Release(frameBudget)
+}
+
 func TestServerWSAdmissionBudgetWaitTimeoutFiresHook(t *testing.T) {
 	t.Parallel()
 
@@ -859,6 +983,7 @@ func TestServerWSAdmissionBudgetWaitTimeoutFiresHook(t *testing.T) {
 	_, wsURL := startWSTestServer(t, srv)
 
 	conn := dialWS(t, wsURL)
+	t.Cleanup(func() { conn.Close() })
 	writeWSJSON(t, conn, payload)
 
 	var firstResp jsonrpcMessage

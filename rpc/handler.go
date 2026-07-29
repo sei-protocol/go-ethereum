@@ -71,9 +71,9 @@ type handler struct {
 	// preDecodeHeld is true if acquirePreDecode reserved budget for the frame in
 	// flight. Single-goroutine access only (Client.read), so a plain bool is fine.
 	preDecodeHeld bool
-	// admissionEventHook is called when WS byte-budget admission times out (see
-	// WSAdmissionReason*). budget_wait_timeout = read loop stalled before the next
-	// read; frame_admission_timeout = decoded frame could not be admitted.
+	// admissionEventHook is called on WS admission-control events (see
+	// WSAdmissionReason*): budget_wait_timeout, frame_admission_timeout, or
+	// oversize_frame.
 	admissionEventHook func(reason string)
 	wsAdmissionTimeout   time.Duration
 

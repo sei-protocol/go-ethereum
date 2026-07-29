@@ -119,18 +119,24 @@ func (s *Server) SetWSConcurrentRequestBytes(limit int64) {
 	s.recomputeWSConcurrentBudget()
 }
 
-// SetWSAdmissionEventHook registers a callback invoked when WS byte-budget admission
-// times out. reason is WSAdmissionReasonBudgetWaitTimeout when the read loop stalls
-// before the next read, or WSAdmissionReasonFrameAdmissionTimeout when a decoded
-// frame cannot be admitted.
+// SetWSAdmissionEventHook registers a callback invoked on WS admission-control
+// events. reason is one of:
+//   - WSAdmissionReasonBudgetWaitTimeout when the read loop stalls waiting for
+//     concurrent-byte budget before the next frame is decoded;
+//   - WSAdmissionReasonFrameAdmissionTimeout when a decoded frame cannot be
+//     admitted under the concurrent-byte budget;
+//   - WSAdmissionReasonOversizeFrame when gorilla's read limit rejects an
+//     incoming message before or during decode.
 func (s *Server) SetWSAdmissionEventHook(hook func(reason string)) {
 	s.admissionEventHook = hook
 }
 
 // SetWSAdmissionTimeout bounds how long a persistent connection will wait for
-// concurrent-byte budget to free up before a frame is read or committed. Zero or
-// negative values select the default (30s). This method should be called before
-// processing any requests via Websocket server.
+// concurrent-byte budget to free up before a frame is read or committed, and how
+// long a WebSocket frame may take to finish arriving after its first data frame
+// once budget has been reserved for it. Zero or negative values select the
+// default (30s). This method should be called before processing any requests
+// via Websocket server.
 func (s *Server) SetWSAdmissionTimeout(timeout time.Duration) {
 	s.wsAdmissionTimeout = timeout
 }
