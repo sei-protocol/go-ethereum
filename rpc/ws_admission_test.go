@@ -259,6 +259,77 @@ func TestWSOversizeFrameFiresAdmissionHook(t *testing.T) {
 	}
 }
 
+// TestWSFragmentedOversizeFrameFiresAdmissionHook covers a message that only crosses
+// gorilla's read limit partway through a run of continuation frames.
+func TestWSFragmentedOversizeFrameFiresAdmissionHook(t *testing.T) {
+	t.Parallel()
+
+	const (
+		readLimit = 200
+		budget    = 1024
+		padLen    = 2000
+	)
+
+	var (
+		mu      sync.Mutex
+		reasons []string
+	)
+	srv := newTestServer()
+	srv.SetWSAdmissionEventHook(func(reason string) {
+		mu.Lock()
+		reasons = append(reasons, reason)
+		mu.Unlock()
+	})
+	srv.SetReadLimits(readLimit)
+	srv.SetWSConcurrentRequestBytes(budget)
+	_, wsURL := startWSTestServer(t, srv)
+
+	// A small write buffer forces gorilla to split a single large Write into many
+	// continuation frames, each well under readLimit on its own.
+	dialer := &websocket.Dialer{WriteBufferSize: 16}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	w, err := conn.NextWriter(websocket.TextMessage)
+	if err != nil {
+		t.Fatalf("next writer: %v", err)
+	}
+	oversized := fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":1,"method":"test_echo","params":["%s"]}`,
+		strings.Repeat("x", padLen),
+	)
+	// The server closes the connection as soon as it detects the read-limit
+	// violation, which can happen before the client finishes writing every
+	// continuation frame — so a write/close error here is expected, not fatal.
+	_, _ = w.Write([]byte(oversized))
+	_ = w.Close()
+
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("expected connection to close after oversized fragmented message")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		mu.Lock()
+		got := append([]string(nil), reasons...)
+		mu.Unlock()
+		if len(got) > 0 {
+			if len(got) != 1 || got[0] != WSAdmissionReasonOversizeFrame {
+				t.Fatalf("admission hook reasons = %v, want [%q]", got, WSAdmissionReasonOversizeFrame)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected oversize-frame admission hook to fire for a fragmented message")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestWSConcurrentLargeFrames(t *testing.T) {
 	t.Parallel()
 

@@ -328,9 +328,7 @@ func newWebsocketCodec(conn *websocket.Conn, host string, req http.Header, readL
 func (wc *websocketCodec) readBatch() ([]*jsonrpcMessage, bool, int64, error) {
 	_, r, err := wc.conn.NextReader()
 	if err != nil {
-		if errors.Is(err, websocket.ErrReadLimit) && wc.handler != nil && wc.handler.admissionEventHook != nil {
-			wc.handler.admissionEventHook(WSAdmissionReasonOversizeFrame)
-		}
+		wc.fireOversizeFrameHook(err)
 		return nil, false, 0, err
 	}
 	if wc.handler != nil {
@@ -343,6 +341,10 @@ func (wc *websocketCodec) readBatch() ([]*jsonrpcMessage, bool, int64, error) {
 		if wc.handler != nil {
 			wc.handler.releasePreDecode()
 		}
+		// A message split across continuation frames only crosses gorilla's read
+		// limit once enough frames have arrived, so ErrReadLimit can surface here
+		// instead of from NextReader above.
+		wc.fireOversizeFrameHook(err)
 		return nil, false, 0, err
 	}
 	messages, batch := parseMessage(rawmsg)
@@ -352,6 +354,12 @@ func (wc *websocketCodec) readBatch() ([]*jsonrpcMessage, bool, int64, error) {
 		}
 	}
 	return messages, batch, int64(len(rawmsg)), nil
+}
+
+func (wc *websocketCodec) fireOversizeFrameHook(err error) {
+	if errors.Is(err, websocket.ErrReadLimit) && wc.handler != nil && wc.handler.admissionEventHook != nil {
+		wc.handler.admissionEventHook(WSAdmissionReasonOversizeFrame)
+	}
 }
 
 func (wc *websocketCodec) close() {
