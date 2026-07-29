@@ -191,7 +191,6 @@ func (h *handler) commitFrameBudget(ctx context.Context, rawLen int64) (release 
 		return func() { h.wsConcurrentBudget.Release(rawLen) }, nil
 	}
 
-	h.preDecodeHeld = false
 	weight := rawLen
 	if weight <= 0 {
 		weight = h.readLimit
@@ -207,6 +206,7 @@ func (h *handler) commitFrameBudget(ctx context.Context, rawLen int64) (release 
 			return nil, fmt.Errorf("concurrent request byte budget exhausted: %w", err)
 		}
 	}
+	h.preDecodeHeld = false
 	return func() { h.wsConcurrentBudget.Release(weight) }, nil
 }
 
