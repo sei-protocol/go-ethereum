@@ -161,6 +161,7 @@ func TestWSBudgetAcquiredOnlyOnFrame(t *testing.T) {
 	_, wsURL := startWSTestServer(t, srv)
 
 	conn := dialWS(t, wsURL)
+	t.Cleanup(func() { conn.Close() })
 	writeWSJSON(t, conn, payload)
 
 	held := false
@@ -271,6 +272,7 @@ func TestWSLargeFrameRejectedByReadLimit(t *testing.T) {
 	_, wsURL := startWSTestServer(t, srv)
 
 	conn := dialWS(t, wsURL)
+	t.Cleanup(func() { conn.Close() })
 	oversized := fmt.Sprintf(
 		`{"jsonrpc":"2.0","id":1,"method":"test_echo","params":["%s"]}`,
 		strings.Repeat("x", readLimit),
@@ -311,6 +313,7 @@ func TestWSOversizeFrameFiresAdmissionHook(t *testing.T) {
 	_, wsURL := startWSTestServer(t, srv)
 
 	conn := dialWS(t, wsURL)
+	t.Cleanup(func() { conn.Close() })
 	oversized := fmt.Sprintf(
 		`{"jsonrpc":"2.0","id":1,"method":"test_echo","params":["%s"]}`,
 		strings.Repeat("x", readLimit),
