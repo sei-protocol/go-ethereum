@@ -167,7 +167,6 @@ func TestResolveCodeHashSkipsFullCodeForNonDelegation(t *testing.T) {
 	statedb := newStubStateDB()
 	addr := common.BytesToAddress([]byte("large-contract"))
 	code := make([]byte, params.MaxCodeSize)
-	code[0] = 0x00 // STOP
 	statedb.setCode(addr, code)
 
 	evm := newPragueTestEVM(t, statedb)
@@ -214,7 +213,7 @@ func TestResolveCodeHashDesignatorLengthWrongPrefix(t *testing.T) {
 	// Exact designator length, but not a delegation prefix — size gate opens,
 	// ParseDelegation must still reject and fall back to the account hash.
 	code := make([]byte, len(types.DelegationPrefix)+common.AddressLength)
-	code[0] = 0x00
+	code[0] = 0xff
 	statedb.setCode(addr, code)
 
 	evm := newPragueTestEVM(t, statedb)
@@ -262,19 +261,37 @@ func TestCallVariantGasEIP7702ChargesDelegationTarget(t *testing.T) {
 	statedb := newStubStateDB()
 	target := common.BytesToAddress([]byte("delegate-target"))
 	eoa := common.BytesToAddress([]byte("delegated-eoa"))
+	baselineAddr := common.BytesToAddress([]byte("baseline-eoa"))
 	statedb.setCode(target, []byte{0x00})
 	statedb.setCode(eoa, types.AddressToDelegation(target))
+	// Same length as a designator, but wrong prefix — no target access charge.
+	baselineCode := make([]byte, len(types.DelegationPrefix)+common.AddressLength)
+	baselineCode[0] = 0xff
+	statedb.setCode(baselineAddr, baselineCode)
 	statedb.AddAddressToAccessList(eoa)
+	statedb.AddAddressToAccessList(baselineAddr)
 
 	evm := newPragueTestEVM(t, statedb)
+	pushCallStack := func(addr common.Address) *Stack {
+		stack := Newstack()
+		stack.Push(uint256.NewInt(0))
+		stack.Push(new(uint256.Int).SetBytes(addr.Bytes()))
+		stack.Push(uint256.NewInt(100_000))
+		return stack
+	}
+
+	baselineContract := NewContract(common.Address{}, common.Address{}, uint256.NewInt(0), 1_000_000, nil)
+	baselineStack := pushCallStack(baselineAddr)
+	baseline, err := gasCallEIP7702(evm, baselineContract, baselineStack, NewMemory(), 0)
+	returnStack(baselineStack)
+	if err != nil {
+		t.Fatalf("baseline gasCallEIP7702: %v", err)
+	}
+
 	contract := NewContract(common.Address{}, common.Address{}, uint256.NewInt(0), 1_000_000, nil)
 	gasBefore := contract.Gas
-
-	stack := Newstack()
+	stack := pushCallStack(eoa)
 	defer returnStack(stack)
-	stack.Push(uint256.NewInt(0))
-	stack.Push(new(uint256.Int).SetBytes(eoa.Bytes()))
-	stack.Push(uint256.NewInt(100_000))
 
 	dyn, err := gasCallEIP7702(evm, contract, stack, NewMemory(), 0)
 	if err != nil {
@@ -286,8 +303,9 @@ func TestCallVariantGasEIP7702ChargesDelegationTarget(t *testing.T) {
 	if !statedb.AddressInAccessList(target) {
 		t.Fatal("expected delegation target to be added to access list")
 	}
-	if dyn < params.ColdAccountAccessCostEIP2929 {
-		t.Fatalf("dynamic gas %d, want at least cold account access %d", dyn, params.ColdAccountAccessCostEIP2929)
+	want := baseline + params.ColdAccountAccessCostEIP2929
+	if dyn != want {
+		t.Fatalf("dynamic gas %d, want baseline %d + cold access %d = %d", dyn, baseline, params.ColdAccountAccessCostEIP2929, want)
 	}
 	if contract.Gas != gasBefore {
 		t.Fatalf("contract gas after calculator = %d, want %d (charges returned to dynamic gas)", contract.Gas, gasBefore)
@@ -298,7 +316,7 @@ func TestCallVariantGasEIP7702DesignatorLengthWrongPrefix(t *testing.T) {
 	statedb := newStubStateDB()
 	addr := common.BytesToAddress([]byte("almost-designator"))
 	code := make([]byte, len(types.DelegationPrefix)+common.AddressLength)
-	code[0] = 0x00
+	code[0] = 0xff
 	statedb.setCode(addr, code)
 	statedb.AddAddressToAccessList(addr)
 
