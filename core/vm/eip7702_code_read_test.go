@@ -1,5 +1,18 @@
 // Copyright 2026 The go-ethereum Authors
 // This file is part of the go-ethereum library.
+//
+// The go-ethereum library is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// The go-ethereum library is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
 package vm
 
@@ -36,8 +49,8 @@ func (s *stubStateDB) setCode(addr common.Address, code []byte) {
 	s.codes[addr] = code
 }
 
-func (s *stubStateDB) CreateAccount(common.Address)              {}
-func (s *stubStateDB) CreateContract(common.Address)             {}
+func (s *stubStateDB) CreateAccount(common.Address)  {}
+func (s *stubStateDB) CreateContract(common.Address) {}
 func (s *stubStateDB) SubBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
 	return *uint256.NewInt(0)
 }
@@ -90,8 +103,8 @@ func (s *stubStateDB) HasSelfDestructed(common.Address) bool { return false }
 func (s *stubStateDB) SelfDestruct6780(common.Address) (uint256.Int, bool) {
 	return *uint256.NewInt(0), false
 }
-func (s *stubStateDB) Exist(common.Address) bool  { return true }
-func (s *stubStateDB) Empty(common.Address) bool  { return false }
+func (s *stubStateDB) Exist(common.Address) bool { return true }
+func (s *stubStateDB) Empty(common.Address) bool { return false }
 func (s *stubStateDB) AddressInAccessList(addr common.Address) bool {
 	_, ok := s.accessList[addr]
 	return ok
@@ -103,7 +116,7 @@ func (s *stubStateDB) AddAddressToAccessList(addr common.Address) {
 	s.accessList[addr] = struct{}{}
 }
 func (s *stubStateDB) AddSlotToAccessList(common.Address, common.Hash) {}
-func (s *stubStateDB) PointCache() *utils.PointCache                  { return nil }
+func (s *stubStateDB) PointCache() *utils.PointCache                   { return nil }
 func (s *stubStateDB) Prepare(params.Rules, common.Address, common.Address, *common.Address, []common.Address, types.AccessList) {
 }
 func (s *stubStateDB) RevertToSnapshot(int) {}
@@ -122,7 +135,9 @@ func (s *stubStateDB) Commit(uint64, bool, bool) (common.Hash, error) {
 	return common.Hash{}, nil
 }
 func (s *stubStateDB) SetTxContext(common.Hash, int) {}
-func (s *stubStateDB) Copy() StateDB                 { return s }
+func (s *stubStateDB) Copy() StateDB {
+	panic("stubStateDB.Copy is not implemented")
+}
 func (s *stubStateDB) IntermediateRoot(bool) common.Hash {
 	return common.Hash{}
 }
@@ -189,7 +204,30 @@ func TestResolveCodeHashLoadsDelegationDesignator(t *testing.T) {
 		t.Fatalf("delegated code hash mismatch: got %x want %x", got, want)
 	}
 	if statedb.getCodeCalls == 0 {
-		t.Fatal("expected GetCode for 23-byte delegation designator")
+		t.Fatal("expected GetCode for designator-sized delegation code")
+	}
+}
+
+func TestResolveCodeHashDesignatorLengthWrongPrefix(t *testing.T) {
+	statedb := newStubStateDB()
+	addr := common.BytesToAddress([]byte("almost-designator"))
+	// Exact designator length, but not a delegation prefix — size gate opens,
+	// ParseDelegation must still reject and fall back to the account hash.
+	code := make([]byte, len(types.DelegationPrefix)+common.AddressLength)
+	code[0] = 0x00
+	statedb.setCode(addr, code)
+
+	evm := newPragueTestEVM(t, statedb)
+	got := evm.resolveCodeHash(addr)
+	want := crypto.Keccak256Hash(code)
+	if got != want {
+		t.Fatalf("code hash mismatch: got %x want %x", got, want)
+	}
+	if statedb.getCodeCalls == 0 {
+		t.Fatal("expected GetCode when size matches designator length")
+	}
+	if _, ok := types.ParseDelegation(code); ok {
+		t.Fatal("test setup: code must not parse as a delegation")
 	}
 }
 
@@ -204,9 +242,9 @@ func TestCallVariantGasEIP7702SkipsFullCodeForNonDelegation(t *testing.T) {
 
 	stack := Newstack()
 	defer returnStack(stack)
-	stack.Push(uint256.NewInt(0))                               // value (Back(2))
-	stack.Push(new(uint256.Int).SetBytes(addr.Bytes()))         // addr (Back(1))
-	stack.Push(uint256.NewInt(100_000))                         // gas (Back(0))
+	stack.Push(uint256.NewInt(0))                       // value (Back(2))
+	stack.Push(new(uint256.Int).SetBytes(addr.Bytes())) // addr (Back(1))
+	stack.Push(uint256.NewInt(100_000))                 // gas (Back(0))
 
 	before := statedb.getCodeCalls
 	if _, err := gasCallEIP7702(evm, contract, stack, NewMemory(), 0); err != nil {
@@ -253,5 +291,31 @@ func TestCallVariantGasEIP7702ChargesDelegationTarget(t *testing.T) {
 	}
 	if contract.Gas != gasBefore {
 		t.Fatalf("contract gas after calculator = %d, want %d (charges returned to dynamic gas)", contract.Gas, gasBefore)
+	}
+}
+
+func TestCallVariantGasEIP7702DesignatorLengthWrongPrefix(t *testing.T) {
+	statedb := newStubStateDB()
+	addr := common.BytesToAddress([]byte("almost-designator"))
+	code := make([]byte, len(types.DelegationPrefix)+common.AddressLength)
+	code[0] = 0x00
+	statedb.setCode(addr, code)
+	statedb.AddAddressToAccessList(addr)
+
+	evm := newPragueTestEVM(t, statedb)
+	contract := NewContract(common.Address{}, common.Address{}, uint256.NewInt(0), 1_000_000, nil)
+
+	stack := Newstack()
+	defer returnStack(stack)
+	stack.Push(uint256.NewInt(0))
+	stack.Push(new(uint256.Int).SetBytes(addr.Bytes()))
+	stack.Push(uint256.NewInt(100_000))
+
+	before := statedb.getCodeCalls
+	if _, err := gasCallEIP7702(evm, contract, stack, NewMemory(), 0); err != nil {
+		t.Fatalf("gasCallEIP7702: %v", err)
+	}
+	if statedb.getCodeCalls <= before {
+		t.Fatal("expected GetCode when size matches designator length")
 	}
 }

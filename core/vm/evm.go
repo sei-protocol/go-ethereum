@@ -609,9 +609,6 @@ func (evm *EVM) resolveCode(addr common.Address) []byte {
 	if !evm.chainRules.IsPrague {
 		return code
 	}
-	if !types.IsDelegationDesignatorLength(len(code)) {
-		return code
-	}
 	if target, ok := types.ParseDelegation(code); ok {
 		// Note we only follow one level of delegation.
 		return evm.StateDB.GetCode(target)
