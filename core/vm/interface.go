@@ -43,6 +43,11 @@ type StateDB interface {
 
 	// SetCode sets the new code for the address, and returns the previous code, if any.
 	SetCode(common.Address, []byte) []byte
+	// GetCodeSize returns the length of the account's code. Implementations must
+	// ensure GetCodeSize(addr) == len(GetCode(addr)). After Prague, CALL-family
+	// gas and resolveCodeHash use the size to decide whether code can be an
+	// EIP-7702 delegation designator before loading it; a mismatched size can
+	// skip delegation-target access-list charging.
 	GetCodeSize(common.Address) int
 
 	AddRefund(uint64)
