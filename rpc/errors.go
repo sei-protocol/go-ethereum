@@ -16,7 +16,15 @@
 
 package rpc
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// errBudgetWaitTimeout is a sentinel error that the handler wraps its pre-decode
+// budget-acquire error in, so the read loop can recognize an admission-control
+// rejection and report it to the peer before closing the connection.
+var errBudgetWaitTimeout = errors.New(errMsgBudgetWaitTimeout)
 
 // HTTPError is returned by client operations when the HTTP status code of the
 // response is not a 2xx status.
@@ -58,21 +66,23 @@ var (
 )
 
 const (
-	errcodeDefault          = -32000
-	errcodeTimeout          = -32002
-	errcodeResponseTooLarge = -32003
-	errcodeRequestTooLarge  = -32004
-	errcodePanic            = -32603
-	errcodeMarshalError     = -32603
+	errcodeDefault           = -32000
+	errcodeTimeout           = -32002
+	errcodeResponseTooLarge  = -32003
+	errcodeRequestTooLarge   = -32004
+	errcodeBudgetWaitTimeout = -32005
+	errcodePanic             = -32603
+	errcodeMarshalError      = -32603
 
 	legacyErrcodeNotificationsUnsupported = -32001
 )
 
 const (
-	errMsgTimeout          = "request timed out"
-	errMsgResponseTooLarge = "response too large"
-	errMsgBatchTooLarge    = "batch too large"
-	errMsgRequestTooLarge  = "request exceeds concurrent request-byte budget"
+	errMsgTimeout           = "request timed out"
+	errMsgResponseTooLarge  = "response too large"
+	errMsgBatchTooLarge     = "batch too large"
+	errMsgRequestTooLarge   = "request exceeds concurrent request-byte budget"
+	errMsgBudgetWaitTimeout = "timed out waiting for concurrent request-byte budget"
 )
 
 type methodNotFoundError struct{ method string }

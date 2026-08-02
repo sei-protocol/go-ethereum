@@ -185,6 +185,7 @@ type jsonCodec struct {
 	encMu   sync.Mutex       // guards the encoder
 	encode  encodeFunc       // encoder to allow multiple transports
 	conn    deadlineCloser
+	handler *handler // set by the read loop for byte-budget admission
 }
 
 type encodeFunc = func(v interface{}, isErrorResponse bool) error
@@ -220,6 +221,11 @@ func NewCodec(conn Conn) ServerCodec {
 	return NewFuncCodec(conn, encode, dec.Decode)
 }
 
+// setBudgetHandler wires in the handler used for byte-budget admission.
+func (c *jsonCodec) setBudgetHandler(h *handler) {
+	c.handler = h
+}
+
 func (c *jsonCodec) peerInfo() PeerInfo {
 	// This returns "ipc" because all other built-in transports have a separate codec type.
 	return PeerInfo{Transport: "ipc", RemoteAddr: c.remote}
@@ -230,10 +236,20 @@ func (c *jsonCodec) remoteAddr() string {
 }
 
 func (c *jsonCodec) readBatch() (messages []*jsonrpcMessage, batch bool, rawLen int64, err error) {
+	// Unlike websocketCodec, this reserves budget before the blocking read for the
+	// next message, so an idle IPC/stdio connection still holds it indefinitely.
+	if c.handler != nil {
+		if err = c.handler.acquirePreDecode(c.handler.rootCtx); err != nil {
+			return nil, false, 0, err
+		}
+	}
 	// Decode the next JSON object in the input stream.
 	// This verifies basic syntax, etc.
 	var rawmsg json.RawMessage
-	if err := c.decode(&rawmsg); err != nil {
+	if err = c.decode(&rawmsg); err != nil {
+		if c.handler != nil {
+			c.handler.releasePreDecode()
+		}
 		return nil, false, 0, err
 	}
 	messages, batch = parseMessage(rawmsg)

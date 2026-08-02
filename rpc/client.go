@@ -126,7 +126,20 @@ func (c *Client) newClientConn(conn ServerCodec) *clientConn {
 	ctx = context.WithValue(ctx, clientContextKey{}, c)
 	ctx = context.WithValue(ctx, peerInfoContextKey{}, conn.peerInfo())
 	handler := newHandler(ctx, conn, c.idgen, c.services, c.batchItemLimit, c.batchResponseMaxSize, c.wsConcurrentBudget, c.readLimit, c.admissionEventHook, c.wsAdmissionTimeout)
+	attachBudgetHandler(conn, handler)
 	return &clientConn{conn, handler}
+}
+
+// budgetHandlerSetter is implemented by codecs that need the handler wired in for
+// byte-budget admission (jsonCodec and, via embedding, websocketCodec).
+type budgetHandlerSetter interface {
+	setBudgetHandler(h *handler)
+}
+
+func attachBudgetHandler(codec ServerCodec, h *handler) {
+	if c, ok := codec.(budgetHandlerSetter); ok {
+		c.setBudgetHandler(h)
+	}
 }
 
 func (cc *clientConn) close(err error, inflightReq *requestOp) {
@@ -727,16 +740,17 @@ func (c *Client) read(conn *clientConn) {
 	codec := conn.codec
 	h := conn.handler
 	for {
-		if err := h.acquirePreDecode(h.rootCtx); err != nil {
-			c.readErr <- err
-			return
-		}
 		msgs, batch, rawLen, err := codec.readBatch()
 		if err != nil {
-			h.releasePreDecode()
+			// Unmatched errors (e.g. oversize WS frames) fall through with no
+			// response: gorilla already sent its own close(1009) for those.
 			var syntaxErr *json.SyntaxError
-			if errors.As(err, &syntaxErr) {
+			switch {
+			case errors.As(err, &syntaxErr):
 				msg := errorMessage(&parseError{err.Error()})
+				codec.writeJSON(context.Background(), msg, true)
+			case errors.Is(err, errBudgetWaitTimeout):
+				msg := errorMessage(&internalServerError{errcodeBudgetWaitTimeout, errMsgBudgetWaitTimeout})
 				codec.writeJSON(context.Background(), msg, true)
 			}
 			c.readErr <- err

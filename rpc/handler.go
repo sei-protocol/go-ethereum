@@ -68,9 +68,12 @@ type handler struct {
 	batchResponseMaxSize int
 	wsConcurrentBudget   *semaphore.Weighted
 	readLimit            int64
-	// admissionEventHook is called when WS byte-budget admission times out (see
-	// WSAdmissionReason*). budget_wait_timeout = read loop stalled before the next
-	// read; frame_admission_timeout = decoded frame could not be admitted.
+	// preDecodeHeld is true if acquirePreDecode reserved budget for the frame in
+	// flight. Single-goroutine access only (Client.read), so a plain bool is fine.
+	preDecodeHeld bool
+	// admissionEventHook is called on WS admission-control events (see
+	// WSAdmissionReason*): budget_wait_timeout, frame_admission_timeout, or
+	// oversize_frame.
 	admissionEventHook func(reason string)
 	wsAdmissionTimeout   time.Duration
 
@@ -85,12 +88,14 @@ type callProc struct {
 
 const (
 	// WSAdmissionReasonBudgetWaitTimeout is emitted when the read loop times out
-	// waiting for concurrent-byte budget before attempting the next read. No frame
-	// has been read yet; this signals backpressure, not frame rejection.
+	// waiting for concurrent-byte budget before the next frame is decoded.
 	WSAdmissionReasonBudgetWaitTimeout = "budget_wait_timeout"
 	// WSAdmissionReasonFrameAdmissionTimeout is emitted when a decoded frame
 	// cannot be admitted under the concurrent-byte budget.
 	WSAdmissionReasonFrameAdmissionTimeout = "frame_admission_timeout"
+	// WSAdmissionReasonOversizeFrame is emitted when gorilla's read limit rejects
+	// an incoming message, on the first frame or partway through continuation frames.
+	WSAdmissionReasonOversizeFrame = "oversize_frame"
 
 	defaultWSAdmissionTimeout = 30 * time.Second
 )
@@ -139,8 +144,13 @@ func (h *handler) acquirePreDecode(ctx context.Context) error {
 	defer cancel()
 	if err := h.wsConcurrentBudget.Acquire(ctx, h.readLimit); err != nil {
 		h.fireAdmissionEventOnBudgetTimeout(err, WSAdmissionReasonBudgetWaitTimeout)
-		return fmt.Errorf("concurrent request byte budget exhausted: %w", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("%w: %w", errBudgetWaitTimeout, err)
+		}
+		// Not a timeout (e.g. connection teardown) — don't report as one.
+		return fmt.Errorf("concurrent request byte budget: %w", err)
 	}
+	h.preDecodeHeld = true
 	return nil
 }
 
@@ -153,19 +163,22 @@ func (h *handler) fireAdmissionEventOnBudgetTimeout(err error, reason string) {
 // releasePreDecode releases a pre-decode reservation after a failed read/decode or a
 // failed commitFrameBudget call.
 func (h *handler) releasePreDecode() {
-	if h.wsConcurrentBudget == nil || h.readLimit <= 0 {
+	if !h.preDecodeHeld {
 		return
 	}
+	h.preDecodeHeld = false
 	h.wsConcurrentBudget.Release(h.readLimit)
 }
 
 // commitFrameBudget finalizes the reservation for a successfully decoded frame,
-// reconciling any pre-decode reservation against the frame's actual size.
+// reconciling any pre-decode reservation against the frame's actual size. If no
+// pre-decode reservation is held (readLimit unset, or the codec never wired in
+// this handler), it falls back to acquiring the full frame size directly.
 func (h *handler) commitFrameBudget(ctx context.Context, rawLen int64) (release func(), err error) {
 	if h.wsConcurrentBudget == nil {
 		return func() {}, nil
 	}
-	if h.readLimit <= 0 {
+	if h.readLimit <= 0 || !h.preDecodeHeld {
 		if rawLen <= 0 {
 			return func() {}, nil
 		}
@@ -193,6 +206,7 @@ func (h *handler) commitFrameBudget(ctx context.Context, rawLen int64) (release 
 			return nil, fmt.Errorf("concurrent request byte budget exhausted: %w", err)
 		}
 	}
+	h.preDecodeHeld = false
 	return func() { h.wsConcurrentBudget.Release(weight) }, nil
 }
 
