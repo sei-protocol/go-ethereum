@@ -75,10 +75,9 @@ type handler struct {
 	// WSAdmissionReason*): budget_wait_timeout, frame_admission_timeout, or
 	// oversize_frame.
 	admissionEventHook func(reason string)
-	wsAdmissionTimeout   time.Duration
-
-	subLock    sync.Mutex
-	serverSubs map[ID]*Subscription
+	wsAdmissionTimeout time.Duration
+	subLock            sync.Mutex
+	serverSubs         map[ID]*Subscription
 }
 
 type callProc struct {
