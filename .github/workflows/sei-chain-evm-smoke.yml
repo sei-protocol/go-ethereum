@@ -11,10 +11,17 @@ on:
   pull_request:
     branches:
       - main
+  # Gives an in-repo baseline on this repo's own main: without it, the only way to
+  # tell "this PR broke sei-chain" from "sei-chain@main drifted" is to go check
+  # sei-chain's CI separately.
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 concurrency:
-  cancel-in-progress: true
+  # Only cancel in-flight PR runs; pushes to main should each get their own verdict.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
 
 env:
