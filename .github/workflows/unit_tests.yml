@@ -11,8 +11,13 @@ on:
       - main
       - master
 
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+
 env:
-  GO_VERSION: '1.25.6'
+  # Matches build/checksums.txt's pinned Go toolchain (separate from the smoke workflow's version)
+  GO_VERSION: '1.24.1'
 
 jobs:
   unit_tests:
