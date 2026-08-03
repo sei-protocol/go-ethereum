@@ -279,9 +279,14 @@ func TestServerSetReadLimits(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected error for request size %d with limit %d, but got none", tc.testSize, tc.readLimit)
 				}
-				// Check if it's the expected message size limit error
-				if !strings.Contains(err.Error(), "message too big") {
-					t.Fatalf("expected 'message too big' error, got: %v", err)
+				// Check if it's the expected message size limit error. The server
+				// enforces the limit by rejecting the oversized frame and closing the
+				// connection; depending on timing, the client either observes gorilla's
+				// graceful close(1009, "message too big") on its next read, or a raw
+				// TCP reset if the server closes while the client is still writing.
+				msg := err.Error()
+				if !strings.Contains(msg, "message too big") && !strings.Contains(msg, "connection reset") {
+					t.Fatalf("expected 'message too big' or 'connection reset' error, got: %v", err)
 				}
 			} else {
 				// Expecting success
