@@ -849,7 +849,7 @@ func TestAcquirePreDecodeFiresBudgetWaitHookOnTimeout(t *testing.T) {
 	)
 
 	budget := semaphore.NewWeighted(frameBudget)
-	if err := budget.Acquire(t.Context(), frameBudget); err != nil {
+	if err := budget.Acquire(context.Background(), frameBudget); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { budget.Release(frameBudget) })
@@ -860,7 +860,7 @@ func TestAcquirePreDecodeFiresBudgetWaitHookOnTimeout(t *testing.T) {
 	})
 	h.wsConcurrentBudget = budget
 
-	if err := h.acquirePreDecode(t.Context()); err == nil {
+	if err := h.acquirePreDecode(context.Background()); err == nil {
 		t.Fatal("expected acquirePreDecode to fail when budget is exhausted")
 	}
 
@@ -890,10 +890,10 @@ func TestCommitFrameBudgetFiresFrameAdmissionHookOnTimeout(t *testing.T) {
 	})
 	h.wsConcurrentBudget = budget
 
-	if err := h.acquirePreDecode(t.Context()); err != nil {
+	if err := h.acquirePreDecode(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := budget.Acquire(t.Context(), frameBudget-readLimit); err != nil {
+	if err := budget.Acquire(context.Background(), frameBudget-readLimit); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -901,7 +901,7 @@ func TestCommitFrameBudgetFiresFrameAdmissionHookOnTimeout(t *testing.T) {
 		budget.Release(frameBudget - readLimit)
 	})
 
-	if _, err := h.commitFrameBudget(t.Context(), frameBudget); err == nil {
+	if _, err := h.commitFrameBudget(context.Background(), frameBudget); err == nil {
 		t.Fatal("expected commitFrameBudget to fail when extra budget is unavailable")
 	}
 
@@ -932,15 +932,15 @@ func TestCommitFrameBudgetFailureReleasesPreDecodeBudget(t *testing.T) {
 	h := newAdmissionTestHandler(frameBudget, readLimit, waitTimeout, nil)
 	h.wsConcurrentBudget = budget
 
-	if err := h.acquirePreDecode(t.Context()); err != nil {
+	if err := h.acquirePreDecode(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	// Leave no room for the extra Acquire inside commitFrameBudget.
-	if err := budget.Acquire(t.Context(), frameBudget-readLimit); err != nil {
+	if err := budget.Acquire(context.Background(), frameBudget-readLimit); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := h.commitFrameBudget(t.Context(), frameBudget); err == nil {
+	if _, err := h.commitFrameBudget(context.Background(), frameBudget); err == nil {
 		t.Fatal("expected commitFrameBudget to fail when extra budget is unavailable")
 	}
 
