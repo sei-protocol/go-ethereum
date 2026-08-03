@@ -280,18 +280,20 @@ func makeCallVariantGasCallEIP7702(oldCalculator gasFunc) gasFunc {
 		}
 
 		// Check if code is a delegation and if so, charge for resolution.
-		if target, ok := types.ParseDelegation(evm.StateDB.GetCode(addr)); ok {
-			var cost uint64
-			if evm.StateDB.AddressInAccessList(target) {
-				cost = params.WarmStorageReadCostEIP2929
-			} else {
-				evm.StateDB.AddAddressToAccessList(target)
-				cost = params.ColdAccountAccessCostEIP2929
+		if types.IsDelegationDesignatorLength(evm.StateDB.GetCodeSize(addr)) {
+			if target, ok := types.ParseDelegation(evm.StateDB.GetCode(addr)); ok {
+				var cost uint64
+				if evm.StateDB.AddressInAccessList(target) {
+					cost = params.WarmStorageReadCostEIP2929
+				} else {
+					evm.StateDB.AddAddressToAccessList(target)
+					cost = params.ColdAccountAccessCostEIP2929
+				}
+				if !contract.UseGas(cost, evm.Config.Tracer, tracing.GasChangeCallStorageColdAccess) {
+					return 0, ErrOutOfGas
+				}
+				total += cost
 			}
-			if !contract.UseGas(cost, evm.Config.Tracer, tracing.GasChangeCallStorageColdAccess) {
-				return 0, ErrOutOfGas
-			}
-			total += cost
 		}
 
 		// Now call the old calculator, which takes into account
