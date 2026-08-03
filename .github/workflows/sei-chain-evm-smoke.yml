@@ -25,7 +25,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
 
 env:
-  GO_VERSION: '1.25.6'
   GO_TEST_TIMEOUT: 30m
 
 permissions:
@@ -52,30 +51,34 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          # Derived from sei-chain's own go.mod so this can't silently drift from what
+          # sei-chain's CI actually builds with.
+          go-version-file: sei-chain/go.mod
           cache-dependency-path: sei-chain/go.sum
 
       - name: Point sei-chain at this PR's go-ethereum
         working-directory: sei-chain
+        # Scoped to the go-ethereum module rather than a full `go mod tidy`, which would
+        # re-resolve sei-chain's entire module graph and turn unrelated tree breakage into
+        # a false failure for this PR.
         run: |
           go mod edit -replace github.com/ethereum/go-ethereum=../go-ethereum
-          # go mod tidy (not just download) refreshes go.sum for any transitive
-          # deps pulled in by the local replace, e.g. a dependency bump in this PR.
-          go mod tidy
+          go mod download github.com/ethereum/go-ethereum
 
       - name: Verify go-ethereum replace took effect
         working-directory: sei-chain
         run: |
+          expected="$GITHUB_WORKSPACE/go-ethereum"
           replace_dir=$(go list -m -f '{{with .Replace}}{{.Dir}}{{end}}' github.com/ethereum/go-ethereum)
-          case "$replace_dir" in
-            */go-ethereum) echo "replace resolved to $replace_dir" ;;
-            *) echo "go-ethereum replace did not take effect (resolved: '$replace_dir')"; exit 1 ;;
-          esac
+          [ "$replace_dir" = "$expected" ] || { echo "go-ethereum replace did not take effect (resolved: '$replace_dir', expected: '$expected')"; exit 1; }
+          echo "replace resolved to $replace_dir"
 
       - name: Run EVM smoke tests
         working-directory: sei-chain
         env:
-          GOFLAGS: -race -tags=ledger,test_ledger_mock
+          # -mod=mod lets go test add any go.sum entries the local replace's transitive
+          # deps still need, without a blanket `go mod tidy`.
+          GOFLAGS: -race -mod=mod -tags=ledger,test_ledger_mock
         run: |
           go test -timeout=${{ env.GO_TEST_TIMEOUT }} \
             ./x/evm/... ./evmrpc/... ./precompiles/... ./app/ante/...
