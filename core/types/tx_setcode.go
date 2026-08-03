@@ -33,9 +33,16 @@ import (
 // another account.
 var DelegationPrefix = []byte{0xef, 0x01, 0x00}
 
+// IsDelegationDesignatorLength reports whether n is the fixed EIP-7702
+// delegation designator size (DelegationPrefix followed by a 20-byte address).
+// This is necessary but not sufficient for ParseDelegation to succeed.
+func IsDelegationDesignatorLength(n int) bool {
+	return n == len(DelegationPrefix)+common.AddressLength
+}
+
 // ParseDelegation tries to parse the address from a delegation slice.
 func ParseDelegation(b []byte) (common.Address, bool) {
-	if len(b) != 23 || !bytes.HasPrefix(b, DelegationPrefix) {
+	if !IsDelegationDesignatorLength(len(b)) || !bytes.HasPrefix(b, DelegationPrefix) {
 		return common.Address{}, false
 	}
 	return common.BytesToAddress(b[len(DelegationPrefix):]), true

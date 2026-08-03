@@ -622,10 +622,12 @@ func (evm *EVM) resolveCode(addr common.Address) []byte {
 // internally to associate jumpdest analysis to code.
 func (evm *EVM) resolveCodeHash(addr common.Address) common.Hash {
 	if evm.chainRules.IsPrague {
-		code := evm.StateDB.GetCode(addr)
-		if target, ok := types.ParseDelegation(code); ok {
-			// Note we only follow one level of delegation.
-			return evm.StateDB.GetCodeHash(target)
+		if types.IsDelegationDesignatorLength(evm.StateDB.GetCodeSize(addr)) {
+			code := evm.StateDB.GetCode(addr)
+			if target, ok := types.ParseDelegation(code); ok {
+				// Note we only follow one level of delegation.
+				return evm.StateDB.GetCodeHash(target)
+			}
 		}
 	}
 	return evm.StateDB.GetCodeHash(addr)
