@@ -52,7 +52,18 @@ jobs:
         working-directory: sei-chain
         run: |
           go mod edit -replace github.com/ethereum/go-ethereum=../go-ethereum
-          go mod download
+          # go mod tidy (not just download) refreshes go.sum for any transitive
+          # deps pulled in by the local replace, e.g. a dependency bump in this PR.
+          go mod tidy
+
+      - name: Verify go-ethereum replace took effect
+        working-directory: sei-chain
+        run: |
+          replace_dir=$(go list -m -f '{{with .Replace}}{{.Dir}}{{end}}' github.com/ethereum/go-ethereum)
+          case "$replace_dir" in
+            */go-ethereum) echo "replace resolved to $replace_dir" ;;
+            *) echo "go-ethereum replace did not take effect (resolved: '$replace_dir')"; exit 1 ;;
+          esac
 
       - name: Run EVM smoke tests
         working-directory: sei-chain
