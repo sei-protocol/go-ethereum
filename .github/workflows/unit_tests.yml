@@ -44,39 +44,3 @@ jobs:
         with:
           name: coverage
           path: coverage.out
-
-  upload-coverage:
-    runs-on: ubuntu-latest
-    needs: unit_tests
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      # Download all coverage reports from the 'tests' job
-      - name: Download coverage reports
-        uses: actions/download-artifact@v4
-
-      - name: Set GOPATH
-        run: echo "GOPATH=$(go env GOPATH)" >> $GITHUB_ENV
-
-      - name: Add GOPATH/bin to PATH
-        run: echo "GOBIN=$(go env GOPATH)/bin" >> $GITHUB_ENV
-
-      - name: Install gocovmerge
-        # Pinned to a commit (gocovmerge has no tagged releases) so upstream changes can't alter
-        # or break CI, and this builds in its own module without touching this repo's go.mod/go.sum.
-        run: go install github.com/wadey/gocovmerge@b5bfa59ec0adc420475f97f89b58045c721d761c
-
-      - name: Merge coverage reports
-        run: gocovmerge $(find . -type f -name 'coverage.out') > coverage.txt
-
-      - name: Check coverage report lines
-        run: wc -l coverage.txt
-        continue-on-error: true
-
-      - name: Check coverage report files
-        run: find . -type f -name 'coverage.out'
-        continue-on-error: true
