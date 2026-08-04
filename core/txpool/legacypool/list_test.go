@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
@@ -77,24 +78,63 @@ func TestListAddTotalcostOverflow(t *testing.T) {
 
 	// First tx: cost equal to the max uint256 value (gasLimit 0 keeps gas cost
 	// out of the equation, so cost == value).
-	maxUint256 := uint256.NewInt(0).Not(uint256.NewInt(0)).ToBig()
-	tx0, _ := types.SignTx(types.NewTransaction(0, common.Address{}, maxUint256, 0, big.NewInt(1), nil), types.HomesteadSigner{}, key)
+	tx0, _ := types.SignTx(types.NewTx(&types.LegacyTx{Nonce: 0, To: &common.Address{}, Value: math.MaxBig256, Gas: 0, GasPrice: big.NewInt(1)}), types.HomesteadSigner{}, key)
 	if added, _ := list.Add(tx0, DefaultConfig.PriceBump); !added {
 		t.Fatalf("expected first transaction to be added")
 	}
-	if list.totalcost.Cmp(uint256.MustFromBig(maxUint256)) != 0 {
-		t.Fatalf("totalcost mismatch after first add: have %v, want %v", list.totalcost, maxUint256)
+	if list.totalcost.Cmp(uint256.MustFromBig(math.MaxBig256)) != 0 {
+		t.Fatalf("totalcost mismatch after first add: have %v, want %v", list.totalcost, math.MaxBig256)
 	}
 
 	// Second tx: any positive cost added on top now overflows totalcost.
-	tx1, _ := types.SignTx(types.NewTransaction(1, common.Address{}, big.NewInt(1), 0, big.NewInt(1), nil), types.HomesteadSigner{}, key)
+	tx1, _ := types.SignTx(types.NewTx(&types.LegacyTx{Nonce: 1, To: &common.Address{}, Value: big.NewInt(1), Gas: 0, GasPrice: big.NewInt(1)}), types.HomesteadSigner{}, key)
 	added, _ := list.Add(tx1, DefaultConfig.PriceBump)
 	if added {
 		t.Fatalf("expected overflowing transaction to be rejected")
 	}
 	// totalcost must be untouched by the rejected add.
-	if list.totalcost.Cmp(uint256.MustFromBig(maxUint256)) != 0 {
-		t.Fatalf("totalcost corrupted by rejected add: have %v, want %v", list.totalcost, maxUint256)
+	if list.totalcost.Cmp(uint256.MustFromBig(math.MaxBig256)) != 0 {
+		t.Fatalf("totalcost corrupted by rejected add: have %v, want %v", list.totalcost, math.MaxBig256)
+	}
+	// The rejected tx must not have been stored either.
+	if list.txs.Get(1) != nil {
+		t.Fatalf("rejected transaction should not be stored in the list")
+	}
+}
+
+// TestListAddTotalCostOverflowOnReplace tests the fee-bump replacement path:
+// if applying a valid replacement (subtracting the old tx's cost and adding
+// the new one) would overflow totalcost, the replacement must be rejected
+// and totalcost/the stored tx must be left exactly as they were.
+func TestListAddTotalCostOverflowOnReplace(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+	list := newList(true)
+
+	// Filler tx at a different nonce, pushing totalcost close to the ceiling.
+	filler, _ := types.SignTx(types.NewTx(&types.LegacyTx{Nonce: 2, To: &common.Address{}, Value: new(big.Int).Sub(math.MaxBig256, big.NewInt(10)), Gas: 0, GasPrice: big.NewInt(1)}), types.HomesteadSigner{}, key)
+	if added, _ := list.Add(filler, DefaultConfig.PriceBump); !added {
+		t.Fatalf("expected filler transaction to be added")
+	}
+
+	// Original tx at nonce 0, low gas price so a fee-bumped replacement is easy to construct.
+	orig, _ := types.SignTx(types.NewTx(&types.LegacyTx{Nonce: 0, To: &common.Address{}, Value: big.NewInt(5), Gas: 0, GasPrice: big.NewInt(10)}), types.HomesteadSigner{}, key)
+	if added, _ := list.Add(orig, DefaultConfig.PriceBump); !added {
+		t.Fatalf("expected original transaction to be added")
+	}
+	totalBefore := new(uint256.Int).Set(list.totalcost)
+
+	// Replacement satisfies the fee-bump requirement (higher gas price) but its
+	// cost, once substituted for orig's, would overflow totalcost.
+	replacement, _ := types.SignTx(types.NewTx(&types.LegacyTx{Nonce: 0, To: &common.Address{}, Value: big.NewInt(11), Gas: 0, GasPrice: big.NewInt(100)}), types.HomesteadSigner{}, key)
+	added, _ := list.Add(replacement, DefaultConfig.PriceBump)
+	if added {
+		t.Fatalf("expected overflowing replacement to be rejected")
+	}
+	if list.totalcost.Cmp(totalBefore) != 0 {
+		t.Fatalf("totalCost corrupted by rejected replacement: have %v, want %v", list.totalcost, totalBefore)
+	}
+	if list.txs.Get(0) != orig {
+		t.Fatalf("rejected replacement should leave the original transaction in place")
 	}
 }
 

@@ -323,23 +323,22 @@ func (l *list) Add(tx *types.Transaction, priceBump uint64) (bool, *types.Transa
 		if tx.GasFeeCapIntCmp(thresholdFeeCap) < 0 || tx.GasTipCapIntCmp(thresholdTip) < 0 {
 			return false, nil
 		}
-		// Old is being replaced, subtract old cost
-		l.subTotalCost([]*types.Transaction{old})
 	}
-	// Add new tx cost to totalcost
+	// Compute the list's total cost with the new tx applied (and the old one,
+	// if any, replaced) on a scratch value first, so a rejection never leaves
+	// l.totalcost partially mutated.
 	cost, overflow := uint256.FromBig(tx.Cost())
 	if overflow {
 		return false, nil
 	}
-	if _, overflow = new(uint256.Int).AddOverflow(l.totalcost, cost); overflow {
-		if old != nil {
-			// Old cost was already subtracted above; restore it since the
-			// replacement is being rejected and old remains in the list.
-			l.totalcost.Add(l.totalcost, uint256.MustFromBig(old.Cost()))
-		}
+	projected := new(uint256.Int).Set(l.totalcost)
+	if old != nil {
+		projected.SubOverflow(projected, uint256.MustFromBig(old.Cost()))
+	}
+	if _, overflow = projected.AddOverflow(projected, cost); overflow {
 		return false, nil
 	}
-	l.totalcost.Add(l.totalcost, cost)
+	l.totalcost.Set(projected)
 
 	// Otherwise overwrite the old transaction with the current one
 	l.txs.Put(tx)
