@@ -68,6 +68,36 @@ func TestListAddVeryExpensive(t *testing.T) {
 	}
 }
 
+// TestListAddTotalcostOverflow tests that adding a transaction whose cost, once
+// accumulated onto the list's totalcost, would overflow 256 bits is rejected
+// rather than silently wrapping the tracked total.
+func TestListAddTotalcostOverflow(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+	list := newList(true)
+
+	// First tx: cost equal to the max uint256 value (gasLimit 0 keeps gas cost
+	// out of the equation, so cost == value).
+	maxUint256 := uint256.NewInt(0).Not(uint256.NewInt(0)).ToBig()
+	tx0, _ := types.SignTx(types.NewTransaction(0, common.Address{}, maxUint256, 0, big.NewInt(1), nil), types.HomesteadSigner{}, key)
+	if added, _ := list.Add(tx0, DefaultConfig.PriceBump); !added {
+		t.Fatalf("expected first transaction to be added")
+	}
+	if list.totalcost.Cmp(uint256.MustFromBig(maxUint256)) != 0 {
+		t.Fatalf("totalcost mismatch after first add: have %v, want %v", list.totalcost, maxUint256)
+	}
+
+	// Second tx: any positive cost added on top now overflows totalcost.
+	tx1, _ := types.SignTx(types.NewTransaction(1, common.Address{}, big.NewInt(1), 0, big.NewInt(1), nil), types.HomesteadSigner{}, key)
+	added, _ := list.Add(tx1, DefaultConfig.PriceBump)
+	if added {
+		t.Fatalf("expected overflowing transaction to be rejected")
+	}
+	// totalcost must be untouched by the rejected add.
+	if list.totalcost.Cmp(uint256.MustFromBig(maxUint256)) != 0 {
+		t.Fatalf("totalcost corrupted by rejected add: have %v, want %v", list.totalcost, maxUint256)
+	}
+}
+
 func BenchmarkListAdd(b *testing.B) {
 	// Generate a list of transactions to insert
 	key, _ := crypto.GenerateKey()
