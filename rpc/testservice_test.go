@@ -219,6 +219,20 @@ func (s *notificationTestService) HangSubscription(ctx context.Context, val int)
 	return subscription, nil
 }
 
+// syncSleepService behaves like testService.Sleep but signals startedCh the
+// moment the method starts executing, i.e. after the server has admitted the
+// request (acquired any WS concurrency budget for it). Tests use this as a
+// deterministic alternative to polling the budget semaphore.
+type syncSleepService struct {
+	startedCh chan struct{}
+}
+
+// Sleep is invoked reflectively by the RPC server when it receives a request for synctest_sleep
+func (s *syncSleepService) Sleep(duration time.Duration) {
+	s.startedCh <- struct{}{}
+	time.Sleep(duration)
+}
+
 // largeRespService generates arbitrary-size JSON responses.
 type largeRespService struct {
 	length int

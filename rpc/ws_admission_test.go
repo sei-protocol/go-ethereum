@@ -66,6 +66,15 @@ func makeSleepMsg(id int, sleep time.Duration, pad int) string {
 	)
 }
 
+// makeSyncSleepMsg builds a request for syncSleepService, registered under the
+// "synctest" name.
+func makeSyncSleepMsg(id int, sleep time.Duration, pad int) string {
+	return fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":%d,"method":"synctest_sleep","params":[%d],"_pad":"%s"}`,
+		id, sleep.Nanoseconds(), strings.Repeat("x", pad),
+	)
+}
+
 func TestWSIdleConnectionsDoNotHoldBudget(t *testing.T) {
 	t.Parallel()
 
@@ -420,8 +429,14 @@ func TestWSConcurrentLargeFrames(t *testing.T) {
 		pad           = 48
 	)
 
+	started := make(chan struct{}, 2)
+	svc := &syncSleepService{startedCh: started}
+
 	srv := newTestServer()
-	payload := makeSleepMsg(1, sleepDuration, pad)
+	if err := srv.RegisterName("synctest", svc); err != nil {
+		t.Fatalf("register synctest service: %v", err)
+	}
+	payload := makeSyncSleepMsg(1, sleepDuration, pad)
 	frameSize := int64(len(payload))
 	srv.SetReadLimits(frameSize)
 	srv.SetWSConcurrentRequestBytes(2 * frameSize)
@@ -430,35 +445,33 @@ func TestWSConcurrentLargeFrames(t *testing.T) {
 	conn := dialWS(t, wsURL)
 	t.Cleanup(func() { conn.Close() })
 
-	writeWSJSON(t, conn, makeSleepMsg(1, sleepDuration, pad))
-	writeWSJSON(t, conn, makeSleepMsg(2, sleepDuration, pad))
+	writeWSJSON(t, conn, makeSyncSleepMsg(1, sleepDuration, pad))
+	writeWSJSON(t, conn, makeSyncSleepMsg(2, sleepDuration, pad))
 
-	// With budget == frameSize the two requests would serialize; with 2*frameSize
-	// both should hold budget while test_sleep runs.
-	overlapDeadline := time.Now().Add(sleepDuration)
-	var overlapped bool
-	for time.Now().Before(overlapDeadline) {
-		if !srv.wsConcurrentBudget.TryAcquire(frameSize) {
-			overlapped = true
-			break
+	// Both requests must be admitted (budget acquired) and start sleeping well
+	// before either finishes. If the budget only allowed one at a time, the
+	// second "started" signal would not arrive until after the first request's
+	// full sleepDuration has elapsed and it released its share of the budget.
+	overlapWait := sleepDuration / 2
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(overlapWait):
+			t.Fatal("expected two large frames to hold byte budget concurrently")
 		}
-		srv.wsConcurrentBudget.Release(frameSize)
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !overlapped {
-		t.Fatal("expected two large frames to hold byte budget concurrently")
 	}
 
-	var firstResp jsonrpcMessage
-	readWSJSON(t, conn, &firstResp)
-	if string(firstResp.ID) != "1" {
-		t.Fatalf("expected first response id 1, got %s", string(firstResp.ID))
+	// The two requests run concurrently in separate goroutines with identical
+	// sleep durations, so the server gives no guarantee about which response
+	// is written first.
+	gotIDs := make(map[string]bool, 2)
+	for i := 0; i < 2; i++ {
+		var resp jsonrpcMessage
+		readWSJSON(t, conn, &resp)
+		gotIDs[string(resp.ID)] = true
 	}
-
-	var secondResp jsonrpcMessage
-	readWSJSON(t, conn, &secondResp)
-	if string(secondResp.ID) != "2" {
-		t.Fatalf("expected second response id 2, got %s", string(secondResp.ID))
+	if !gotIDs["1"] || !gotIDs["2"] {
+		t.Fatalf("expected responses for ids 1 and 2, got %v", gotIDs)
 	}
 }
 
