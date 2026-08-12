@@ -24,8 +24,8 @@ import (
 	"fmt"
 	"math/big"
 	"reflect"
-	"strings"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -662,6 +662,57 @@ func TestTraceBlock(t *testing.T) {
 		if string(have) != want {
 			t.Errorf("test %d, result mismatch, have\n%v\n, want\n%v\n", i, string(have), want)
 		}
+	}
+}
+
+func TestTraceBlockMetadataLoopRespectsContext(t *testing.T) {
+	t.Parallel()
+
+	accounts := newAccounts(2)
+	genesis := &core.Genesis{
+		Config: params.TestChainConfig,
+		Alloc: types.GenesisAlloc{
+			accounts[0].addr: {Balance: big.NewInt(params.Ether)},
+			accounts[1].addr: {Balance: big.NewInt(params.Ether)},
+		},
+	}
+	signer := types.HomesteadSigner{}
+	backend := newTestBackend(t, 1, genesis, func(i int, b *core.BlockGen) {
+		tx, _ := types.SignTx(types.NewTx(&types.LegacyTx{
+			Nonce:    uint64(i),
+			To:       &accounts[1].addr,
+			Value:    big.NewInt(1),
+			Gas:      params.TxGas,
+			GasPrice: b.BaseFee(),
+		}), signer, accounts[0].key)
+		b.AddTx(tx)
+	})
+	defer backend.teardown()
+	api := NewAPI(backend)
+
+	block := backend.chain.GetBlockByNumber(1)
+	if block == nil {
+		t.Fatal("expected block 1")
+	}
+
+	var runnableCalls atomic.Int32
+	metadata := []tracersutils.TraceBlockMetadata{{
+		ShouldIncludeInTraceResult: false,
+		TraceRunnable: func(vm.StateDB) {
+			runnableCalls.Add(1)
+			t.Error("TraceRunnable should not run after context is done")
+		},
+	}}
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	_, err := api.traceBlock(ctx, block, metadata, nil)
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context error, got %v", err)
+	}
+	if runnableCalls.Load() != 0 {
+		t.Fatalf("expected TraceRunnable not to run, calls=%d", runnableCalls.Load())
 	}
 }
 
