@@ -696,23 +696,32 @@ func TestTraceBlockMetadataLoopRespectsContext(t *testing.T) {
 	}
 
 	var runnableCalls atomic.Int32
-	metadata := []tracersutils.TraceBlockMetadata{{
-		ShouldIncludeInTraceResult: false,
-		TraceRunnable: func(vm.StateDB) {
-			runnableCalls.Add(1)
-			t.Error("TraceRunnable should not run after context is done")
-		},
-	}}
-
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	_, err := api.traceBlock(ctx, block, metadata, nil)
-	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context error, got %v", err)
+	metadata := []tracersutils.TraceBlockMetadata{
+		{
+			ShouldIncludeInTraceResult: false,
+			TraceRunnable: func(vm.StateDB) {
+				runnableCalls.Add(1)
+				cancel()
+			},
+		},
+		{
+			ShouldIncludeInTraceResult: false,
+			TraceRunnable: func(vm.StateDB) {
+				runnableCalls.Add(1)
+				t.Error("TraceRunnable should not run after context is canceled between iterations")
+			},
+		},
 	}
-	if runnableCalls.Load() != 0 {
-		t.Fatalf("expected TraceRunnable not to run, calls=%d", runnableCalls.Load())
+
+	_, err := api.traceBlock(ctx, block, metadata, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if runnableCalls.Load() != 1 {
+		t.Fatalf("expected exactly one TraceRunnable call, got %d", runnableCalls.Load())
 	}
 }
 

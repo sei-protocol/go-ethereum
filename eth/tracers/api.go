@@ -661,7 +661,7 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, metadata []t
 		return results, nil
 	}
 	for _, md := range metadata {
-		if err := ctx.Err(); err != nil {
+		if err = ctx.Err(); err != nil {
 			return nil, err
 		}
 		if md.ShouldIncludeInTraceResult {
