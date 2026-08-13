@@ -51,8 +51,9 @@ import (
 )
 
 var (
-	errStateNotFound = errors.New("state not found")
-	errBlockNotFound = errors.New("block not found")
+	errStateNotFound        = errors.New("state not found")
+	errBlockNotFound        = errors.New("block not found")
+	evmLoopCancelTracerID   atomic.Int64
 )
 
 type testBackend struct {
@@ -722,6 +723,75 @@ func TestTraceBlockMetadataLoopRespectsContext(t *testing.T) {
 	}
 	if runnableCalls.Load() != 1 {
 		t.Fatalf("expected exactly one TraceRunnable call, got %d", runnableCalls.Load())
+	}
+}
+
+func registerCancelAfterFirstTxTracer(cancel context.CancelFunc, traced *atomic.Int32) string {
+	name := fmt.Sprintf("cancelAfterFirstTxEndTracer%d", evmLoopCancelTracerID.Add(1))
+	DefaultDirectory.Register(name, func(_ *Context, _ json.RawMessage, _ *params.ChainConfig) (*Tracer, error) {
+		return &Tracer{
+			Hooks: &tracing.Hooks{
+				OnTxEnd: func(_ *types.Receipt, _ error) {
+					if traced.Add(1) == 1 {
+						cancel()
+					}
+				},
+			},
+			GetResult: func() (json.RawMessage, error) {
+				return json.RawMessage(`{}`), nil
+			},
+			Stop: func(error) {},
+		}, nil
+	}, false)
+	return name
+}
+
+func TestTraceBlockEVMLoopRespectsContext(t *testing.T) {
+	accounts := newAccounts(2)
+	genesis := &core.Genesis{
+		Config: params.TestChainConfig,
+		Alloc: types.GenesisAlloc{
+			accounts[0].addr: {Balance: big.NewInt(params.Ether)},
+			accounts[1].addr: {Balance: big.NewInt(params.Ether)},
+		},
+	}
+	signer := types.HomesteadSigner{}
+	backend := newTestBackend(t, 1, genesis, func(i int, b *core.BlockGen) {
+		for nonce := uint64(0); nonce < 2; nonce++ {
+			tx, _ := types.SignTx(types.NewTx(&types.LegacyTx{
+				Nonce:    nonce,
+				To:       &accounts[1].addr,
+				Value:    big.NewInt(1),
+				Gas:      params.TxGas,
+				GasPrice: b.BaseFee(),
+			}), signer, accounts[0].key)
+			b.AddTx(tx)
+		}
+	})
+	defer backend.teardown()
+	api := NewAPI(backend)
+
+	block := backend.chain.GetBlockByNumber(1)
+	if block == nil {
+		t.Fatal("expected block 1")
+	}
+	if block.Transactions().Len() != 2 {
+		t.Fatalf("expected block with 2 transactions, got %d", block.Transactions().Len())
+	}
+
+	var tracedTxs atomic.Int32
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tracerName := registerCancelAfterFirstTxTracer(cancel, &tracedTxs)
+	config := &TraceConfig{Tracer: &tracerName}
+
+	_, err := api.traceBlock(ctx, block, nil, config)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if tracedTxs.Load() != 1 {
+		t.Fatalf("expected exactly one traced transaction, got %d", tracedTxs.Load())
 	}
 }
 
