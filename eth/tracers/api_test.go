@@ -746,6 +746,8 @@ func registerCancelAfterFirstTxTracer(cancel context.CancelFunc, traced *atomic.
 	return name
 }
 
+// TestTraceBlockEVMLoopRespectsContext must not call t.Parallel: it registers a
+// per-run tracer into DefaultDirectory, whose elems map is not safe for concurrent writes.
 func TestTraceBlockEVMLoopRespectsContext(t *testing.T) {
 	accounts := newAccounts(2)
 	genesis := &core.Genesis{
