@@ -663,9 +663,9 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, metadata []t
 		}
 		return results, nil
 	}
-	for _, md := range metadata {
-		if err = ctx.Err(); err != nil {
-			return nil, err
+	for i, md := range metadata {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("trace aborted at metadata entry %d/%d: %w", i+1, len(metadata), err)
 		}
 		if md.ShouldIncludeInTraceResult {
 			i := md.IdxInEthBlock
