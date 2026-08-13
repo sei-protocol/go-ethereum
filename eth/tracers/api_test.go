@@ -51,9 +51,9 @@ import (
 )
 
 var (
-	errStateNotFound        = errors.New("state not found")
-	errBlockNotFound        = errors.New("block not found")
-	evmLoopCancelTracerID   atomic.Int64
+	errStateNotFound      = errors.New("state not found")
+	errBlockNotFound      = errors.New("block not found")
+	evmLoopCancelTracerID atomic.Int64
 )
 
 type testBackend struct {

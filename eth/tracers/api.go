@@ -643,8 +643,8 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, metadata []t
 	)
 	if len(metadata) == 0 {
 		for i, tx := range txs {
-			if err = ctx.Err(); err != nil {
-				return nil, err
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("trace aborted at tx %d/%d: %w", i, len(txs), err)
 			}
 			// Generate the next state snapshot fast without tracing
 			msg, _ := core.TransactionToMessage(tx, signer, block.BaseFee())
