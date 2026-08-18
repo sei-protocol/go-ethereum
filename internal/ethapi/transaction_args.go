@@ -158,6 +158,7 @@ func (args *TransactionArgs) SetDefaults(ctx context.Context, b Backend, skipGas
 				AccessList:           args.AccessList,
 				BlobFeeCap:           args.BlobFeeCap,
 				BlobHashes:           args.BlobHashes,
+				AuthorizationList:    args.AuthorizationList,
 			}
 			latestBlockNr := rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
 			estimated, err := DoEstimateGas(ctx, b, callArgs, latestBlockNr, nil, nil, b.RPCGasCap())
