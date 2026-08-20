@@ -1640,7 +1640,9 @@ func (pool *LegacyPool) truncateQueue() {
 //
 // Note: transactions are not marked as removed in the priced list because re-heaping
 // is always explicitly triggered by SetBaseFee and it would be unnecessary and wasteful
-// to trigger a re-heap is this function
+// to trigger a re-heap in this function. The exception is when re-enqueueing a demoted
+// transaction fails (e.g. total-cost overflow): the tx is dropped from pool.all and
+// marked removed in the priced heap because it genuinely leaves the pool.
 func (pool *LegacyPool) demoteUnexecutables() {
 	// Iterate over all accounts and demote any non-executable transactions
 	gasLimit := pool.currentHead.Load().GasLimit
