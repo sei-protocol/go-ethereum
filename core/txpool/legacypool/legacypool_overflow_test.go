@@ -62,7 +62,7 @@ func TestAddRemoteTotalCostOverflowError(t *testing.T) {
 	from, _ := types.Sender(types.HomesteadSigner{}, valueTx(0, big.NewInt(1), key))
 	testAddBalance(pool, from, math.MaxBig256)
 
-	if err := pool.addRemote(valueTx(0, big.NewInt(1), key)); err != nil {
+	if err := pool.addRemoteSync(valueTx(0, big.NewInt(1), key)); err != nil {
 		t.Fatalf("failed to add base transaction: %v", err)
 	}
 
@@ -80,7 +80,7 @@ func TestAddRemoteTotalCostOverflowError(t *testing.T) {
 		t.Fatalf("failed to seed queue filler: %v", seedErr)
 	}
 
-	err := pool.addRemote(valueTx(2, big.NewInt(1), key))
+	err := pool.addRemoteSync(valueTx(2, big.NewInt(1), key))
 	if !errors.Is(err, txpool.ErrTotalCostOverflow) {
 		t.Fatalf("expected ErrTotalCostOverflow, got %v", err)
 	}
