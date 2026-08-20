@@ -297,29 +297,30 @@ func (l *list) Contains(nonce uint64) bool {
 }
 
 // projectedTotalCost computes the list's total cost after inserting tx, checking
-// for uint256 overflow/underflow. It ignores fee-bump requirements.
-func (l *list) projectedTotalCost(tx *types.Transaction) (*uint256.Int, error) {
-	old := l.txs.Get(tx.Nonce())
+// for uint256 overflow/underflow. It ignores fee-bump requirements. When old is
+// non-nil it is treated as the transaction at tx's nonce (typically the caller's
+// cached l.txs.Get result). cost is tx's cost as uint256 on success.
+func (l *list) projectedTotalCost(tx *types.Transaction, old *types.Transaction) (projected, cost *uint256.Int, err error) {
 	cost, overflow := uint256.FromBig(tx.Cost())
 	if overflow {
-		return nil, txpool.ErrTotalCostOverflow
+		return nil, nil, txpool.ErrTotalCostOverflow
 	}
-	projected := new(uint256.Int).Set(l.totalcost)
+	projected = new(uint256.Int).Set(l.totalcost)
 	if old != nil {
 		if _, underflow := projected.SubOverflow(projected, uint256.MustFromBig(old.Cost())); underflow {
-			return nil, txpool.ErrTotalCostOverflow
+			return nil, nil, txpool.ErrTotalCostOverflow
 		}
 	}
 	if _, overflow = projected.AddOverflow(projected, cost); overflow {
-		return nil, txpool.ErrTotalCostOverflow
+		return nil, nil, txpool.ErrTotalCostOverflow
 	}
-	return projected, nil
+	return projected, cost, nil
 }
 
-// addCostOverflow reports whether inserting tx would overflow the list's tracked
-// total cost. It ignores fee-bump requirements.
+// addCostOverflow returns ErrTotalCostOverflow if inserting tx would overflow
+// the list's tracked total cost. It ignores fee-bump requirements.
 func (l *list) addCostOverflow(tx *types.Transaction) error {
-	_, err := l.projectedTotalCost(tx)
+	_, _, err := l.projectedTotalCost(tx, l.txs.Get(tx.Nonce()))
 	return err
 }
 
@@ -352,11 +353,10 @@ func (l *list) Add(tx *types.Transaction, priceBump uint64) (bool, *types.Transa
 			return false, nil, nil
 		}
 	}
-	projected, err := l.projectedTotalCost(tx)
+	projected, cost, err := l.projectedTotalCost(tx, old)
 	if err != nil {
 		return false, nil, err
 	}
-	cost := uint256.MustFromBig(tx.Cost())
 	l.totalcost.Set(projected)
 
 	// Otherwise overwrite the old transaction with the current one
