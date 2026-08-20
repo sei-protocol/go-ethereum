@@ -24,8 +24,12 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/event"
+	"github.com/ethereum/go-ethereum/params"
 )
 
 func valueTx(nonce uint64, value *big.Int, key *ecdsa.PrivateKey) *types.Transaction {
@@ -76,6 +80,90 @@ func TestAddRemoteTotalCostOverflowError(t *testing.T) {
 	err := pool.addRemote(valueTx(2, big.NewInt(1), key))
 	if !errors.Is(err, txpool.ErrTotalCostOverflow) {
 		t.Fatalf("expected ErrTotalCostOverflow, got %v", err)
+	}
+	if err := validatePoolInternals(pool); err != nil {
+		t.Fatalf("pool internals inconsistent: %v", err)
+	}
+}
+
+// TestAddRemoteTotalCostOverflowErrorFullPool verifies that on a full pool, a
+// transaction overflowing its account list's total cost is rejected with
+// ErrTotalCostOverflow before any underpriced remote tx is evicted for it.
+func TestAddRemoteTotalCostOverflowErrorFullPool(t *testing.T) {
+	statedb, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
+	blockchain := newTestBlockChain(params.TestChainConfig, 10_000_000, statedb, new(event.Feed))
+
+	config := testTxPoolConfig
+	config.GlobalSlots = 2
+	config.GlobalQueue = 1
+
+	pool := New(config, blockchain)
+	if err := pool.Init(config.PriceLimit, blockchain.CurrentBlock(), makeAddressReserver()); err != nil {
+		t.Fatalf("failed to init pool: %v", err)
+	}
+	defer pool.Close()
+
+	// Two cheap, otherwise-evictable fillers from unrelated accounts occupy
+	// two of the pool's three total slots.
+	fillerHashes := make([]common.Hash, 0, 2)
+	for range 2 {
+		fillerKey, _ := crypto.GenerateKey()
+		testAddBalance(pool, crypto.PubkeyToAddress(fillerKey.PublicKey), big.NewInt(1000000))
+
+		filler := pricedTransaction(0, 21000, big.NewInt(1), fillerKey)
+		if err := pool.addRemoteSync(filler); err != nil {
+			t.Fatalf("failed to seed filler transaction: %v", err)
+		}
+		fillerHashes = append(fillerHashes, filler.Hash())
+	}
+
+	// A third, unrelated account already has a queued transaction whose cost
+	// sits at the uint256 ceiling, occupying the pool's last slot.
+	targetKey, _ := crypto.GenerateKey()
+	from := crypto.PubkeyToAddress(targetKey.PublicKey)
+	testAddBalance(pool, from, math.MaxBig256)
+
+	queuedFiller := valueTx(1, maxAffordableValue(nil), targetKey)
+	pool.mu.Lock()
+	pool.queue[from] = newList(false)
+	_, _, seedErr := pool.queue[from].Add(queuedFiller, pool.config.PriceBump)
+	if seedErr == nil {
+		pool.all.Add(queuedFiller)
+	}
+	pool.mu.Unlock()
+	if seedErr != nil {
+		t.Fatalf("failed to seed queue filler: %v", seedErr)
+	}
+
+	if got, want := pool.all.Slots(), int(config.GlobalSlots+config.GlobalQueue); got != want {
+		t.Fatalf("pool not at capacity before overflow add: have %d slots, want %d", got, want)
+	}
+
+	// The incoming transaction is from the same account as queuedFiller (so
+	// it overflows that account's tracked total cost) and is priced well
+	// above the two fillers.
+	overflowTx := pricedTransaction(2, 21000, big.NewInt(1000), targetKey)
+
+	err := pool.addRemoteSync(overflowTx)
+	if !errors.Is(err, txpool.ErrTotalCostOverflow) {
+		t.Fatalf("expected ErrTotalCostOverflow, got %v", err)
+	}
+
+	// None of the previously-pooled remote transactions should have been
+	// evicted to make room for the rejected transaction.
+	for _, hash := range fillerHashes {
+		if pool.all.Get(hash) == nil {
+			t.Fatalf("filler transaction %x was evicted despite the incoming transaction being rejected", hash)
+		}
+	}
+	if pool.all.Get(queuedFiller.Hash()) == nil {
+		t.Fatalf("target account's queued filler was evicted despite the incoming transaction being rejected")
+	}
+	if pool.all.Get(overflowTx.Hash()) != nil {
+		t.Fatalf("overflowing transaction should not have been added to the pool")
+	}
+	if got, want := pool.all.Slots(), int(config.GlobalSlots+config.GlobalQueue); got != want {
+		t.Fatalf("pool slot count changed by rejected overflow add: have %d, want %d", got, want)
 	}
 	if err := validatePoolInternals(pool); err != nil {
 		t.Fatalf("pool internals inconsistent: %v", err)
@@ -174,5 +262,82 @@ func TestDemoteReenqueueTotalCostOverflow(t *testing.T) {
 	}
 	if err := validatePoolInternals(pool); err != nil {
 		t.Fatalf("pool internals inconsistent: %v", err)
+	}
+}
+
+// TestTargetList exercises targetList's three branches directly: an
+// account's pending list when the nonce is already pending, its queue list
+// otherwise, and a fresh empty list when the account has neither.
+func TestTargetList(t *testing.T) {
+	pool, key := setupPool()
+	defer pool.Close()
+
+	from, _ := types.Sender(types.HomesteadSigner{}, valueTx(0, big.NewInt(1), key))
+
+	// No pending or queued list for the account yet: targetList must return a
+	// fresh, empty list rather than nil or an existing one.
+	fresh := pool.targetList(from, valueTx(0, big.NewInt(1), key))
+	if fresh == nil || fresh.Len() != 0 {
+		t.Fatalf("expected a fresh empty list for an unknown account, got %v", fresh)
+	}
+
+	pending := newList(true)
+	pendingTx := valueTx(0, big.NewInt(1), key)
+	if _, _, err := pending.Add(pendingTx, pool.config.PriceBump); err != nil {
+		t.Fatalf("failed to seed pending list: %v", err)
+	}
+	pool.pending[from] = pending
+
+	queue := newList(false)
+	queuedTx := valueTx(1, big.NewInt(1), key)
+	if _, _, err := queue.Add(queuedTx, pool.config.PriceBump); err != nil {
+		t.Fatalf("failed to seed queue list: %v", err)
+	}
+	pool.queue[from] = queue
+
+	// The incoming nonce matches the pending list's tracked nonce, so
+	// targetList must return the pending list, not the queue.
+	if got := pool.targetList(from, valueTx(0, big.NewInt(2), key)); got != pending {
+		t.Fatalf("expected targetList to return the pending list for a pending nonce")
+	}
+	// A nonce that isn't in the pending list falls back to the queue.
+	if got := pool.targetList(from, valueTx(5, big.NewInt(1), key)); got != queue {
+		t.Fatalf("expected targetList to return the queue list when the nonce isn't pending")
+	}
+}
+
+// TestListAddCostOverflowDirect calls list.addCostOverflow directly (rather
+// than indirectly through list.Add, as the existing list.Add overflow tests
+// do) and verifies it neither mutates the list nor stores the rejected
+// transaction.
+func TestListAddCostOverflowDirect(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+	list := newList(false)
+
+	filler := valueTx(0, maxAffordableValue(nil), key)
+	if _, _, err := list.Add(filler, DefaultConfig.PriceBump); err != nil {
+		t.Fatalf("failed to seed filler: %v", err)
+	}
+	totalBefore := list.totalcost.Clone()
+
+	overflow := valueTx(1, big.NewInt(1), key)
+	if err := list.addCostOverflow(overflow); !errors.Is(err, txpool.ErrTotalCostOverflow) {
+		t.Fatalf("expected addCostOverflow to report ErrTotalCostOverflow, got %v", err)
+	}
+	if list.totalcost.Cmp(totalBefore) != 0 {
+		t.Fatalf("addCostOverflow must not mutate totalcost: have %v, want %v", list.totalcost, totalBefore)
+	}
+	if list.txs.Get(overflow.Nonce()) != nil {
+		t.Fatalf("addCostOverflow must not store the checked transaction")
+	}
+
+	// A transaction that fits comfortably must report no error.
+	fits := valueTx(2, big.NewInt(1), key)
+	list2 := newList(false)
+	if err := list2.addCostOverflow(fits); err != nil {
+		t.Fatalf("expected no overflow for a small transaction against an empty list, got %v", err)
+	}
+	if list2.txs.Get(fits.Nonce()) != nil {
+		t.Fatalf("addCostOverflow must not store the checked transaction")
 	}
 }
