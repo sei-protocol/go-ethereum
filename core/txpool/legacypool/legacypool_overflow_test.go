@@ -71,11 +71,14 @@ func TestAddRemoteTotalCostOverflowError(t *testing.T) {
 	if pool.queue[from] == nil {
 		pool.queue[from] = newList(false)
 	}
-	if _, _, err := pool.queue[from].Add(filler, pool.config.PriceBump); err != nil {
-		t.Fatalf("failed to seed queue filler: %v", err)
+	_, _, seedErr := pool.queue[from].Add(filler, pool.config.PriceBump)
+	if seedErr == nil {
+		pool.all.Add(filler)
 	}
-	pool.all.Add(filler)
 	pool.mu.Unlock()
+	if seedErr != nil {
+		t.Fatalf("failed to seed queue filler: %v", seedErr)
+	}
 
 	err := pool.addRemote(valueTx(2, big.NewInt(1), key))
 	if !errors.Is(err, txpool.ErrTotalCostOverflow) {
@@ -183,40 +186,53 @@ func TestPromoteExecutablesStopsOnOverflow(t *testing.T) {
 
 	pool.mu.Lock()
 	pool.pending[from] = newList(true)
-	if _, _, err := pool.pending[from].Add(tx0, pool.config.PriceBump); err != nil {
-		t.Fatalf("failed to seed pending tx0: %v", err)
-	}
+	_, _, err0 := pool.pending[from].Add(tx0, pool.config.PriceBump)
 	pool.all.Add(tx0)
 	pool.pendingNonces.set(from, 1)
 
 	pool.queue[from] = newList(false)
-	if _, _, err := pool.queue[from].Add(tx1, pool.config.PriceBump); err != nil {
-		t.Fatalf("failed to seed queue tx1: %v", err)
-	}
-	if _, _, err := pool.queue[from].Add(tx2, pool.config.PriceBump); err != nil {
-		t.Fatalf("failed to seed queue tx2: %v", err)
-	}
+	_, _, err1 := pool.queue[from].Add(tx1, pool.config.PriceBump)
+	_, _, err2 := pool.queue[from].Add(tx2, pool.config.PriceBump)
 	pool.all.Add(tx1)
 	pool.all.Add(tx2)
 	pool.mu.Unlock()
 
+	if err0 != nil {
+		t.Fatalf("failed to seed pending tx0: %v", err0)
+	}
+	if err1 != nil {
+		t.Fatalf("failed to seed queue tx1: %v", err1)
+	}
+	if err2 != nil {
+		t.Fatalf("failed to seed queue tx2: %v", err2)
+	}
+
 	testAddBalance(pool, from, math.MaxBig256)
 	pool.promoteExecutables([]common.Address{from})
 
+	// Read the fields we need under a single RLock, then release it before
+	// calling validatePoolInternals, which takes its own RLock: holding two
+	// overlapping RLocks in one goroutine can deadlock if a writer is queued
+	// in between them.
 	pool.mu.RLock()
-	defer pool.mu.RUnlock()
-
 	pending := pool.pending[from]
-	if pending != nil && pending.Contains(2) {
+	pendingHasNonce2 := pending != nil && pending.Contains(2)
+	pendingHasNonce0 := pending != nil && pending.Contains(0)
+	queue := pool.queue[from]
+	queueHasNonce2 := queue != nil && queue.Contains(2)
+	tx1InAll := pool.all.Get(tx1.Hash()) != nil
+	pool.mu.RUnlock()
+
+	if pendingHasNonce2 {
 		t.Fatalf("pending must not contain nonce 2 after overflow at nonce 1")
 	}
-	if pending == nil || !pending.Contains(0) {
+	if !pendingHasNonce0 {
 		t.Fatalf("pending should contain nonce 0")
 	}
-	if pool.queue[from] == nil || !pool.queue[from].Contains(2) {
+	if !queueHasNonce2 {
 		t.Fatalf("nonce 2 should remain queued after promotion stopped")
 	}
-	if pool.all.Get(tx1.Hash()) != nil {
+	if tx1InAll {
 		t.Fatalf("overflowing promoted transaction should be dropped from pool.all")
 	}
 	if err := validatePoolInternals(pool); err != nil {
@@ -237,27 +253,35 @@ func TestDemoteReenqueueTotalCostOverflow(t *testing.T) {
 
 	pool.mu.Lock()
 	pool.pending[from] = newList(true)
-	if _, _, err := pool.pending[from].Add(tx0, pool.config.PriceBump); err != nil {
-		t.Fatalf("failed to seed pending tx0: %v", err)
-	}
-	if _, _, err := pool.pending[from].Add(tx1, pool.config.PriceBump); err != nil {
-		t.Fatalf("failed to seed pending tx1: %v", err)
-	}
+	_, _, err0 := pool.pending[from].Add(tx0, pool.config.PriceBump)
+	_, _, err1 := pool.pending[from].Add(tx1, pool.config.PriceBump)
 	pool.queue[from] = newList(false)
-	if _, _, err := pool.queue[from].Add(filler, pool.config.PriceBump); err != nil {
-		t.Fatalf("failed to seed queue filler: %v", err)
-	}
+	_, _, err2 := pool.queue[from].Add(filler, pool.config.PriceBump)
 	for _, tx := range append(pool.pending[from].Flatten(), filler) {
 		pool.all.Add(tx)
 	}
 	pool.mu.Unlock()
 
+	if err0 != nil {
+		t.Fatalf("failed to seed pending tx0: %v", err0)
+	}
+	if err1 != nil {
+		t.Fatalf("failed to seed pending tx1: %v", err1)
+	}
+	if err2 != nil {
+		t.Fatalf("failed to seed queue filler: %v", err2)
+	}
+
 	pool.removeTx(tx0.Hash(), false, true)
 
+	// Release the RLock before calling validatePoolInternals, which takes
+	// its own RLock: two overlapping RLocks in the same goroutine can
+	// deadlock if a writer is queued in between them.
 	pool.mu.RLock()
-	defer pool.mu.RUnlock()
+	tx1InAll := pool.all.Get(tx1.Hash()) != nil
+	pool.mu.RUnlock()
 
-	if pool.all.Get(tx1.Hash()) != nil {
+	if tx1InAll {
 		t.Fatalf("overflowing demoted transaction should be removed from pool.all")
 	}
 	if err := validatePoolInternals(pool); err != nil {
