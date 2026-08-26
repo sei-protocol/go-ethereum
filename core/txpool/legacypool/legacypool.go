@@ -700,6 +700,18 @@ func (pool *LegacyPool) add(tx *types.Transaction) (replaced bool, err error) {
 	}
 	// If the transaction pool is full, discard underpriced transactions
 	if uint64(pool.all.Slots()+numSlots(tx)) > pool.config.GlobalSlots+pool.config.GlobalQueue {
+		// Reject early if the transaction would overflow the sender's current
+		// target list total cost, before evicting cheaper remote transactions.
+		//
+		// Best-effort: this only projects onto targetList(from, tx) as it exists
+		// now. priced.Discard/removeTx below can demote the sender's pending txs
+		// into pool.queue[from], raising that list's totalcost after this check.
+		// enqueueTx will still reject with ErrTotalCostOverflow, but only after
+		// eviction may have already dropped other accounts' transactions.
+		if err := pool.targetList(from, tx).addCostOverflow(tx); err != nil {
+			return false, err
+		}
+
 		// If the new transaction is underpriced, don't accept it
 		if pool.priced.Underpriced(tx) {
 			log.Trace("Discarding underpriced transaction", "hash", hash, "gasTipCap", tx.GasTipCap(), "gasFeeCap", tx.GasFeeCap())
@@ -762,7 +774,10 @@ func (pool *LegacyPool) add(tx *types.Transaction) (replaced bool, err error) {
 	// Try to replace an existing transaction in the pending pool
 	if list := pool.pending[from]; list != nil && list.Contains(tx.Nonce()) {
 		// Nonce already pending, check if required price bump is met
-		inserted, old := list.Add(tx, pool.config.PriceBump)
+		inserted, old, err := list.Add(tx, pool.config.PriceBump)
+		if err != nil {
+			return false, err
+		}
 		if !inserted {
 			pendingDiscardMeter.Mark(1)
 			return false, txpool.ErrReplaceUnderpriced
@@ -790,6 +805,17 @@ func (pool *LegacyPool) add(tx *types.Transaction) (replaced bool, err error) {
 
 	log.Trace("Pooled new future transaction", "hash", hash, "from", from, "to", tx.To())
 	return replaced, nil
+}
+
+// targetList returns the list a transaction would be inserted into.
+func (pool *LegacyPool) targetList(from common.Address, tx *types.Transaction) *list {
+	if list := pool.pending[from]; list != nil && list.Contains(tx.Nonce()) {
+		return list
+	}
+	if list := pool.queue[from]; list != nil {
+		return list
+	}
+	return newList(false)
 }
 
 // isGapped reports whether the given transaction is immediately executable.
@@ -825,7 +851,10 @@ func (pool *LegacyPool) enqueueTx(hash common.Hash, tx *types.Transaction, addAl
 	if pool.queue[from] == nil {
 		pool.queue[from] = newList(false)
 	}
-	inserted, old := pool.queue[from].Add(tx, pool.config.PriceBump)
+	inserted, old, err := pool.queue[from].Add(tx, pool.config.PriceBump)
+	if err != nil {
+		return false, err
+	}
 	if !inserted {
 		// An older transaction was better, discard this
 		queuedDiscardMeter.Mark(1)
@@ -867,7 +896,13 @@ func (pool *LegacyPool) promoteTx(addr common.Address, hash common.Hash, tx *typ
 	}
 	list := pool.pending[addr]
 
-	inserted, old := list.Add(tx, pool.config.PriceBump)
+	inserted, old, err := list.Add(tx, pool.config.PriceBump)
+	if err != nil {
+		pool.all.Remove(hash)
+		pool.priced.Removed(1)
+		pendingDiscardMeter.Mark(1)
+		return false
+	}
 	if !inserted {
 		// An older transaction was better, discard this
 		pool.all.Remove(hash)
@@ -1093,7 +1128,10 @@ func (pool *LegacyPool) removeTx(hash common.Hash, outofbound bool, unreserve bo
 			// Postpone any invalidated transactions
 			for _, tx := range invalids {
 				// Internal shuffle shouldn't touch the lookup set.
-				pool.enqueueTx(tx.Hash(), tx, false)
+				if _, err := pool.enqueueTx(tx.Hash(), tx, false); err != nil {
+					pool.all.Remove(tx.Hash())
+					pool.priced.Removed(1)
+				}
 			}
 			// Update the account nonce if needed
 			pool.pendingNonces.setIfLower(addr, tx.Nonce())
@@ -1428,11 +1466,21 @@ func (pool *LegacyPool) promoteExecutables(accounts []common.Address) []*types.T
 
 		// Gather all executable transactions and promote them
 		readies := list.Ready(pool.pendingNonces.get(addr))
-		for _, tx := range readies {
+		for i, tx := range readies {
 			hash := tx.Hash()
 			if pool.promoteTx(addr, hash, tx) {
 				promoted = append(promoted, tx)
+				continue
 			}
+			// Stop promotion for this account to avoid a nonce gap in pending and
+			// put any already-removed follow-up transactions back in the queue.
+			for _, remaining := range readies[i+1:] {
+				if _, err := pool.enqueueTx(remaining.Hash(), remaining, false); err != nil {
+					pool.all.Remove(remaining.Hash())
+					pool.priced.Removed(1)
+				}
+			}
+			break
 		}
 		log.Trace("Promoted queued transactions", "count", len(promoted))
 		queuedGauge.Dec(int64(len(readies)))
@@ -1592,7 +1640,9 @@ func (pool *LegacyPool) truncateQueue() {
 //
 // Note: transactions are not marked as removed in the priced list because re-heaping
 // is always explicitly triggered by SetBaseFee and it would be unnecessary and wasteful
-// to trigger a re-heap is this function
+// to trigger a re-heap in this function. The exception is when re-enqueueing a demoted
+// transaction fails (e.g. total-cost overflow): the tx is dropped from pool.all and
+// marked removed in the priced heap because it genuinely leaves the pool.
 func (pool *LegacyPool) demoteUnexecutables() {
 	// Iterate over all accounts and demote any non-executable transactions
 	gasLimit := pool.currentHead.Load().GasLimit
@@ -1620,7 +1670,10 @@ func (pool *LegacyPool) demoteUnexecutables() {
 			log.Trace("Demoting pending transaction", "hash", hash)
 
 			// Internal shuffle shouldn't touch the lookup set.
-			pool.enqueueTx(hash, tx, false)
+			if _, err := pool.enqueueTx(hash, tx, false); err != nil {
+				pool.all.Remove(hash)
+				pool.priced.Removed(1)
+			}
 		}
 		pendingGauge.Dec(int64(len(olds) + len(drops) + len(invalids)))
 
@@ -1632,7 +1685,10 @@ func (pool *LegacyPool) demoteUnexecutables() {
 				log.Warn("Demoting invalidated transaction", "hash", hash)
 
 				// Internal shuffle shouldn't touch the lookup set.
-				pool.enqueueTx(hash, tx, false)
+				if _, err := pool.enqueueTx(hash, tx, false); err != nil {
+					pool.all.Remove(hash)
+					pool.priced.Removed(1)
+				}
 			}
 			pendingGauge.Dec(int64(len(gapped)))
 		}

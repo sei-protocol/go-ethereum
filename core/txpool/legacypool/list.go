@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/holiman/uint256"
 )
@@ -295,17 +296,45 @@ func (l *list) Contains(nonce uint64) bool {
 	return l.txs.Get(nonce) != nil
 }
 
+// projectedTotalCost computes the list's total cost after inserting tx, checking
+// for uint256 overflow/underflow. It ignores fee-bump requirements. When old is
+// non-nil it is treated as the transaction at tx's nonce (typically the caller's
+// cached l.txs.Get result). cost is tx's cost as uint256 on success.
+func (l *list) projectedTotalCost(tx *types.Transaction, old *types.Transaction) (projected, cost *uint256.Int, err error) {
+	cost, overflow := uint256.FromBig(tx.Cost())
+	if overflow {
+		return nil, nil, txpool.ErrTotalCostOverflow
+	}
+	projected = new(uint256.Int).Set(l.totalcost)
+	if old != nil {
+		if _, underflow := projected.SubOverflow(projected, uint256.MustFromBig(old.Cost())); underflow {
+			return nil, nil, txpool.ErrTotalCostOverflow
+		}
+	}
+	if _, overflow = projected.AddOverflow(projected, cost); overflow {
+		return nil, nil, txpool.ErrTotalCostOverflow
+	}
+	return projected, cost, nil
+}
+
+// addCostOverflow returns ErrTotalCostOverflow if inserting tx would overflow
+// the list's tracked total cost. It ignores fee-bump requirements.
+func (l *list) addCostOverflow(tx *types.Transaction) error {
+	_, _, err := l.projectedTotalCost(tx, l.txs.Get(tx.Nonce()))
+	return err
+}
+
 // Add tries to insert a new transaction into the list, returning whether the
 // transaction was accepted, and if yes, any previous transaction it replaced.
 //
 // If the new transaction is accepted into the list, the lists' cost and gas
 // thresholds are also potentially updated.
-func (l *list) Add(tx *types.Transaction, priceBump uint64) (bool, *types.Transaction) {
+func (l *list) Add(tx *types.Transaction, priceBump uint64) (bool, *types.Transaction, error) {
 	// If there's an older better transaction, abort
 	old := l.txs.Get(tx.Nonce())
 	if old != nil {
 		if old.GasFeeCapCmp(tx) >= 0 || old.GasTipCapCmp(tx) >= 0 {
-			return false, nil
+			return false, nil, nil
 		}
 		// thresholdFeeCap = oldFC  * (100 + priceBump) / 100
 		a := big.NewInt(100 + int64(priceBump))
@@ -321,22 +350,12 @@ func (l *list) Add(tx *types.Transaction, priceBump uint64) (bool, *types.Transa
 		// old ones as well as checking the percentage threshold to ensure that
 		// this is accurate for low (Wei-level) gas price replacements.
 		if tx.GasFeeCapIntCmp(thresholdFeeCap) < 0 || tx.GasTipCapIntCmp(thresholdTip) < 0 {
-			return false, nil
+			return false, nil, nil
 		}
 	}
-	// Compute the list's total cost with the new tx applied (and the old one,
-	// if any, replaced) on a scratch value first, so a rejection never leaves
-	// l.totalcost partially mutated.
-	cost, overflow := uint256.FromBig(tx.Cost())
-	if overflow {
-		return false, nil
-	}
-	projected := new(uint256.Int).Set(l.totalcost)
-	if old != nil {
-		projected.SubOverflow(projected, uint256.MustFromBig(old.Cost()))
-	}
-	if _, overflow = projected.AddOverflow(projected, cost); overflow {
-		return false, nil
+	projected, cost, err := l.projectedTotalCost(tx, old)
+	if err != nil {
+		return false, nil, err
 	}
 	l.totalcost.Set(projected)
 
@@ -348,7 +367,7 @@ func (l *list) Add(tx *types.Transaction, priceBump uint64) (bool, *types.Transa
 	if gas := tx.Gas(); l.gascap < gas {
 		l.gascap = gas
 	}
-	return true, old
+	return true, old, nil
 }
 
 // Forward removes all transactions from the list with a nonce lower than the

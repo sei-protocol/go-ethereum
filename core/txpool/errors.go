@@ -34,6 +34,10 @@ var (
 	// with a different one without the required price bump.
 	ErrReplaceUnderpriced = errors.New("replacement transaction underpriced")
 
+	// ErrTotalCostOverflow is returned if adding a transaction would overflow the
+	// tracked aggregate cost of an account's transaction list.
+	ErrTotalCostOverflow = errors.New("total cost overflow")
+
 	// ErrAccountLimitExceeded is returned if a transaction would exceed the number
 	// allowed by a pool for a single account.
 	ErrAccountLimitExceeded = errors.New("account limit exceeded")
