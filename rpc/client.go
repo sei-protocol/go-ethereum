@@ -126,19 +126,22 @@ func (c *Client) newClientConn(conn ServerCodec) *clientConn {
 	ctx = context.WithValue(ctx, clientContextKey{}, c)
 	ctx = context.WithValue(ctx, peerInfoContextKey{}, conn.peerInfo())
 	handler := newHandler(ctx, conn, c.idgen, c.services, c.batchItemLimit, c.batchResponseMaxSize, c.wsConcurrentBudget, c.readLimit, c.admissionEventHook, c.wsAdmissionTimeout)
-	attachBudgetHandler(conn, handler)
+	attachHandler(conn, handler)
 	return &clientConn{conn, handler}
 }
 
-// budgetHandlerSetter is implemented by codecs that need the handler wired in for
-// byte-budget admission (jsonCodec and, via embedding, websocketCodec).
-type budgetHandlerSetter interface {
-	setBudgetHandler(h *handler)
+// handlerSetter is implemented by codecs that need the handler wired in to enforce its
+// read limits (jsonCodec and, via embedding, websocketCodec).
+type handlerSetter interface {
+	setHandler(h *handler)
 }
 
-func attachBudgetHandler(codec ServerCodec, h *handler) {
-	if c, ok := codec.(budgetHandlerSetter); ok {
-		c.setBudgetHandler(h)
+// attachHandler wires h into codec so reads on it observe the handler's limits. A codec
+// that does not implement handlerSetter reads unlimited, and the handler's own checks
+// remain the backstop.
+func attachHandler(codec ServerCodec, h *handler) {
+	if c, ok := codec.(handlerSetter); ok {
+		c.setHandler(h)
 	}
 }
 

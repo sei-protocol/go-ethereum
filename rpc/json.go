@@ -185,7 +185,7 @@ type jsonCodec struct {
 	encMu   sync.Mutex       // guards the encoder
 	encode  encodeFunc       // encoder to allow multiple transports
 	conn    deadlineCloser
-	handler *handler // set by the read loop for byte-budget admission
+	handler *handler // set by the read loop; source of this codec's read limits
 }
 
 type encodeFunc = func(v interface{}, isErrorResponse bool) error
@@ -221,9 +221,18 @@ func NewCodec(conn Conn) ServerCodec {
 	return NewFuncCodec(conn, encode, dec.Decode)
 }
 
-// setBudgetHandler wires in the handler used for byte-budget admission.
-func (c *jsonCodec) setBudgetHandler(h *handler) {
+// setHandler wires in the handler whose limits govern reads on this codec.
+func (c *jsonCodec) setHandler(h *handler) {
 	c.handler = h
+}
+
+// batchItemLimit returns the number of batch elements a read may decode, or 0 when no
+// limit applies.
+func (c *jsonCodec) batchItemLimit() int {
+	if c.handler == nil {
+		return 0
+	}
+	return c.handler.batchRequestLimit
 }
 
 func (c *jsonCodec) peerInfo() PeerInfo {
@@ -252,7 +261,7 @@ func (c *jsonCodec) readBatch() (messages []*jsonrpcMessage, batch bool, rawLen 
 		}
 		return nil, false, 0, err
 	}
-	messages, batch = parseMessage(rawmsg)
+	messages, batch = parseMessage(rawmsg, c.batchItemLimit())
 	for i, msg := range messages {
 		if msg == nil {
 			// Message is JSON 'null'. Replace with zero value so it
@@ -290,8 +299,9 @@ func (c *jsonCodec) closed() <-chan interface{} {
 // parseMessage parses raw bytes as a (batch of) JSON-RPC message(s). There are no error
 // checks in this function because the raw message has already been syntax-checked when it
 // is called. Any non-JSON-RPC messages in the input return the zero value of
-// jsonrpcMessage.
-func parseMessage(raw json.RawMessage) ([]*jsonrpcMessage, bool) {
+// jsonrpcMessage. A batch is decoded to at most itemLimit+1 messages; an itemLimit of 0
+// means unlimited.
+func parseMessage(raw json.RawMessage, itemLimit int) ([]*jsonrpcMessage, bool) {
 	if !isBatch(raw) {
 		msgs := []*jsonrpcMessage{{}}
 		json.Unmarshal(raw, &msgs[0])
@@ -301,6 +311,13 @@ func parseMessage(raw json.RawMessage) ([]*jsonrpcMessage, bool) {
 	dec.Token() // skip '['
 	var msgs []*jsonrpcMessage
 	for dec.More() {
+		// Stop one element past the limit rather than at it. That surplus element is
+		// what handleBatch's own count check reads to reject the batch, and decoding
+		// past it would allocate a jsonrpcMessage per element of an array the server
+		// has already decided not to serve.
+		if itemLimit > 0 && len(msgs) > itemLimit {
+			break
+		}
 		msgs = append(msgs, new(jsonrpcMessage))
 		dec.Decode(&msgs[len(msgs)-1])
 	}

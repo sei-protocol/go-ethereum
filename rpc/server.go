@@ -223,6 +223,7 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 
 	h := newHandler(ctx, codec, s.idgen, &s.services, s.batchItemLimit, s.batchResponseLimit, nil, s.readLimit, nil, s.wsAdmissionTimeout)
 	h.allowSubscribe = false
+	attachHandler(codec, h)
 	defer h.close(io.EOF, nil)
 
 	reqs, batch, _, err := codec.readBatch()
