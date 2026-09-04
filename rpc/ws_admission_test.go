@@ -546,13 +546,6 @@ func TestWSBudgetWaitTimeoutOnActiveBurst(t *testing.T) {
 	}
 }
 
-// passthroughCodec embeds ServerCodec without implementing budgetHandlerSetter, so
-// attachBudgetHandler's type assertion fails for it — like any decorator that forwards
-// reads but not setBudgetHandler.
-type passthroughCodec struct {
-	ServerCodec
-}
-
 // TestBudgetCommitWithoutHandlerWiringDoesNotPanic guards against a regression where
 // commitFrameBudget released budget that was never acquired for an unwired codec,
 // panicking the semaphore on the first request.
@@ -569,6 +562,12 @@ func TestBudgetCommitWithoutHandlerWiringDoesNotPanic(t *testing.T) {
 	srv.SetWSConcurrentRequestBytes(budget)
 
 	p1, p2 := net.Pipe()
+
+	// passthroughCodec embeds ServerCodec without implementing handlerSetter, so
+	// attachHandler's type assertion fails for it.
+	type passthroughCodec struct {
+		ServerCodec
+	}
 	wrapped := &passthroughCodec{ServerCodec: NewCodec(p1)}
 	go srv.ServeCodec(wrapped, 0)
 	t.Cleanup(func() { p2.Close(); p1.Close(); srv.Stop() })

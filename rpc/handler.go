@@ -393,7 +393,9 @@ func (h *handler) respondWithBatchTooLarge(cp *callProc, batch []*jsonrpcMessage
 	resp := errorMessage(&invalidRequestError{errMsgBatchTooLarge})
 	// Find the first call and add its "id" field to the error.
 	// This is the best we can do, given that the protocol doesn't have a way
-	// of reporting an error for the entire batch.
+	// of reporting an error for the entire batch. The batch is only decoded up to
+	// the item limit, so a batch whose every decoded element is a notification is
+	// answered with a null id even if a later element was a call.
 	for _, msg := range batch {
 		if msg.isCall() {
 			resp.ID = msg.ID

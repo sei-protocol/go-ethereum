@@ -362,7 +362,7 @@ func (wc *websocketCodec) readBatch() ([]*jsonrpcMessage, bool, int64, error) {
 		wc.fireOversizeFrameHook(err)
 		return nil, false, 0, err
 	}
-	messages, batch := parseMessage(rawmsg)
+	messages, batch := parseMessage(rawmsg, wc.batchItemLimit())
 	for i, msg := range messages {
 		if msg == nil {
 			messages[i] = new(jsonrpcMessage)
