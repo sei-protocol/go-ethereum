@@ -127,10 +127,13 @@ func WithHTTPAuth(a HTTPAuth) ClientOption {
 // auth information to the request.
 type HTTPAuth func(h http.Header) error
 
-// WithBatchItemLimit changes the maximum number of items allowed in batch requests.
+// WithBatchItemLimit changes the maximum number of items allowed in an incoming batch.
 //
-// Note: this option applies when processing incoming batch requests. It does not affect
-// batch requests sent by the client.
+// Note: this option applies to batches the client receives: both batch requests sent by
+// the server on a bidirectional connection and batched responses to the client's own
+// requests. A batch with more items than the limit is rejected instead of dispatched, and
+// only its first limit+1 items are decoded. It does not cap the size of the batches the
+// client itself sends.
 func WithBatchItemLimit(limit int) ClientOption {
 	return optionFunc(func(cfg *clientConfig) {
 		cfg.batchItemLimit = limit

@@ -315,6 +315,13 @@ func parseMessage(raw json.RawMessage, itemLimit int) ([]*jsonrpcMessage, bool) 
 		// what handleBatch's own count check reads to reject the batch, and decoding
 		// past it would allocate a jsonrpcMessage per element of an array the server
 		// has already decided not to serve.
+		//
+		// The overshoot is load-bearing: handleBatch rejects on
+		// len(msgs) > h.batchRequestLimit, so returning exactly itemLimit elements here
+		// would make an over-limit batch look in-limit and be executed. Keep this break
+		// and that comparison in agreement. TestParseMessageBatchItemLimit pins the
+		// itemLimit+1 result, and testdata/reqresp-batch.js pins that a batch of exactly
+		// the limit is still served.
 		if itemLimit > 0 && len(msgs) > itemLimit {
 			break
 		}
