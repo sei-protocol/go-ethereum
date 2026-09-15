@@ -226,6 +226,9 @@ func TestGasSurchargeTraceReason(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
+	if result.Err != nil {
+		t.Fatalf("vm error: %v", result.Err)
+	}
 	if result.UsedGas != params.TxGas+surcharge {
 		t.Fatalf("UsedGas = %d, want %d", result.UsedGas, params.TxGas+surcharge)
 	}
@@ -260,7 +263,7 @@ func TestGasSurchargePassesTraceReason(t *testing.T) {
 	const surcharge uint64 = 1_000
 	var got tracing.GasChangeReason
 	var saw bool
-	_, err := executeCall(t, callConfig{
+	result, err := executeCall(t, callConfig{
 		gasLimit:    params.TxGas + surcharge,
 		surcharge:   surcharge,
 		reason:      tracing.GasChangeUnspecified,
@@ -277,6 +280,9 @@ func TestGasSurchargePassesTraceReason(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
+	if result.Err != nil {
+		t.Fatalf("vm error: %v", result.Err)
+	}
 	if !saw || got != tracing.GasChangeUnspecified {
 		t.Fatalf("surcharge reason = %v (saw %v), want Unspecified", got, saw)
 	}
@@ -290,6 +296,9 @@ func TestGasSurchargeZeroIsUnchanged(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
+	}
+	if result.Err != nil {
+		t.Fatalf("vm error: %v", result.Err)
 	}
 	if result.UsedGas != params.TxGas {
 		t.Fatalf("UsedGas = %d, want %d", result.UsedGas, params.TxGas)
@@ -387,6 +396,9 @@ func TestPragueFloorExcludesSurcharge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
+	if result.Err != nil {
+		t.Fatalf("vm error: %v", result.Err)
+	}
 	if want := surcharge + floor; result.UsedGas != want {
 		t.Fatalf("UsedGas = %d, want surcharge+floor %d (intrinsic %d)", result.UsedGas, want, intrinsic)
 	}
@@ -447,7 +459,7 @@ func executeCall(t *testing.T, cfg callConfig) (*ExecutionResult, error) {
 	t.Helper()
 
 	from := common.HexToAddress("0x1")
-	to := common.HexToAddress("0x2")
+	to := common.HexToAddress("0xbeef")
 
 	statedb, err := state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
 	if err != nil {
