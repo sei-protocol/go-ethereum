@@ -255,9 +255,11 @@ func NewStateTransition(evm *vm.EVM, msg *Message, gp *GasPool, feeCharged bool,
 	}
 }
 
-// WithGasSurcharge reserves non-refundable gas before intrinsic gas and EVM execution.
-// The surcharge is included in UsedGas and fees, and excluded from refund caps and data-floor gas.
-// reason is the tracer category emitted when the surcharge is reserved.
+// WithGasSurcharge configures Execute to reserve non-refundable gas after preCheck
+// and before intrinsic gas. Call it before Execute; ApplyMessage does not apply a
+// surcharge. The reservation is included in UsedGas and fees and excluded from
+// refund caps and the data floor. A shortfall returns ErrIntrinsicGas. reason is
+// the tracer category emitted when the reservation is taken.
 func (st *StateTransition) WithGasSurcharge(gas uint64, reason tracing.GasChangeReason) *StateTransition {
 	st.gasSurcharge = gas
 	st.gasSurchargeReason = reason
@@ -482,9 +484,8 @@ func (st *StateTransition) Execute() (*ExecutionResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		executionGasLimit := msg.GasLimit - st.gasSurcharge
-		if executionGasLimit < floorDataGas {
-			return nil, fmt.Errorf("%w: have %d, want %d", ErrFloorDataGas, executionGasLimit, floorDataGas)
+		if st.gasRemaining < floorDataGas {
+			return nil, fmt.Errorf("%w: have %d, want %d", ErrFloorDataGas, st.gasRemaining, floorDataGas)
 		}
 	}
 	if t := st.evm.Config.Tracer; t != nil && t.OnGasChange != nil {
@@ -683,6 +684,7 @@ func (st *StateTransition) calcRefund() uint64 {
 	return refund
 }
 
+// executionGasUsed returns gas consumed by intrinsic cost and EVM execution, excluding the surcharge.
 func (st *StateTransition) executionGasUsed() uint64 {
 	return st.gasUsed() - st.gasSurcharge
 }
