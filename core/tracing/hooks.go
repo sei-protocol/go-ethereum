@@ -342,7 +342,9 @@ const (
 	GasChangeTxDataFloor GasChangeReason = 19
 	// GasChangeTxAutoAssociation is the gas reserved for automatic sender association.
 	// There is at most one such gas change per transaction, and only when a surcharge is set.
-	GasChangeTxAutoAssociation GasChangeReason = 20
+	// 0x80 sits above upstream's sequential GasChangeTx* values so a later geth reason
+	// does not collide here; GasChangeIgnored remains 0xFF.
+	GasChangeTxAutoAssociation GasChangeReason = 0x80
 
 	// GasChangeIgnored is a special value that can be used to indicate that the gas change should be ignored as
 	// it will be "manually" tracked by a direct emit of the gas change event.
