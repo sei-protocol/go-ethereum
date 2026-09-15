@@ -235,6 +235,8 @@ type StateTransition struct {
 	msg                  *Message
 	gasRemaining         uint64
 	initialGas           uint64
+	gasSurcharge         uint64
+	gasSurchargeReason   tracing.GasChangeReason
 	state                vm.StateDB
 	evm                  *vm.EVM
 	feeCharged           bool
@@ -251,6 +253,15 @@ func NewStateTransition(evm *vm.EVM, msg *Message, gp *GasPool, feeCharged bool,
 		feeCharged:           feeCharged,
 		shouldIncrementNonce: shouldIncrementNonce,
 	}
+}
+
+// WithGasSurcharge reserves non-refundable gas before intrinsic gas and EVM execution.
+// The surcharge is included in UsedGas and fees, and excluded from refund caps and data-floor gas.
+// reason is the tracer category emitted when the surcharge is reserved.
+func (st *StateTransition) WithGasSurcharge(gas uint64, reason tracing.GasChangeReason) *StateTransition {
+	st.gasSurcharge = gas
+	st.gasSurchargeReason = reason
+	return st
 }
 
 // to returns the recipient of the message.
@@ -440,6 +451,15 @@ func (st *StateTransition) Execute() (*ExecutionResult, error) {
 	if err := st.preCheck(); err != nil {
 		return nil, err
 	}
+	if st.gasRemaining < st.gasSurcharge {
+		return nil, fmt.Errorf("%w: have %d, want surcharge %d", ErrIntrinsicGas, st.gasRemaining, st.gasSurcharge)
+	}
+	if st.gasSurcharge > 0 {
+		if t := st.evm.Config.Tracer; t != nil && t.OnGasChange != nil {
+			t.OnGasChange(st.gasRemaining, st.gasRemaining-st.gasSurcharge, st.gasSurchargeReason)
+		}
+		st.gasRemaining -= st.gasSurcharge
+	}
 
 	var (
 		msg              = st.msg
@@ -462,8 +482,9 @@ func (st *StateTransition) Execute() (*ExecutionResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		if msg.GasLimit < floorDataGas {
-			return nil, fmt.Errorf("%w: have %d, want %d", ErrFloorDataGas, msg.GasLimit, floorDataGas)
+		executionGasLimit := msg.GasLimit - st.gasSurcharge
+		if executionGasLimit < floorDataGas {
+			return nil, fmt.Errorf("%w: have %d, want %d", ErrFloorDataGas, executionGasLimit, floorDataGas)
 		}
 	}
 	if t := st.evm.Config.Tracer; t != nil && t.OnGasChange != nil {
@@ -538,9 +559,9 @@ func (st *StateTransition) Execute() (*ExecutionResult, error) {
 	st.gasRemaining += gasRefund
 	if rules.IsPrague {
 		// After EIP-7623: Data-heavy transactions pay the floor gas.
-		if st.gasUsed() < floorDataGas {
+		if st.executionGasUsed() < floorDataGas {
 			prev := st.gasRemaining
-			st.gasRemaining = st.initialGas - floorDataGas
+			st.gasRemaining = st.initialGas - st.gasSurcharge - floorDataGas
 			if t := st.evm.Config.Tracer; t != nil && t.OnGasChange != nil {
 				t.OnGasChange(prev, st.gasRemaining, tracing.GasChangeTxDataFloor)
 			}
@@ -647,11 +668,11 @@ func (st *StateTransition) applyAuthorization(auth *types.SetCodeAuthorization) 
 func (st *StateTransition) calcRefund() uint64 {
 	var refund uint64
 	if !st.evm.ChainConfig().IsLondon(st.evm.Context.BlockNumber) {
-		// Before EIP-3529: refunds were capped to gasUsed / 2
-		refund = st.gasUsed() / params.RefundQuotient
+		// Before EIP-3529: refunds were capped to execution gas / 2
+		refund = st.executionGasUsed() / params.RefundQuotient
 	} else {
-		// After EIP-3529: refunds are capped to gasUsed / 5
-		refund = st.gasUsed() / params.RefundQuotientEIP3529
+		// After EIP-3529: refunds are capped to execution gas / 5
+		refund = st.executionGasUsed() / params.RefundQuotientEIP3529
 	}
 	if refund > st.state.GetRefund() {
 		refund = st.state.GetRefund()
@@ -660,6 +681,10 @@ func (st *StateTransition) calcRefund() uint64 {
 		st.evm.Config.Tracer.OnGasChange(st.gasRemaining, st.gasRemaining+refund, tracing.GasChangeTxRefunds)
 	}
 	return refund
+}
+
+func (st *StateTransition) executionGasUsed() uint64 {
+	return st.gasUsed() - st.gasSurcharge
 }
 
 // returnGas returns ETH for remaining gas,

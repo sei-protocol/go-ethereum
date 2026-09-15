@@ -340,6 +340,9 @@ const (
 	// GasChangeTxDataFloor is the amount of extra gas the transaction has to pay to reach the minimum gas requirement for the
 	// transaction data. This change will always be a negative change.
 	GasChangeTxDataFloor GasChangeReason = 19
+	// GasChangeTxAutoAssociation is the gas reserved for automatic sender association.
+	// There is at most one such gas change per transaction, and only when a surcharge is set.
+	GasChangeTxAutoAssociation GasChangeReason = 20
 
 	// GasChangeIgnored is a special value that can be used to indicate that the gas change should be ignored as
 	// it will be "manually" tracked by a direct emit of the gas change event.
