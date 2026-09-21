@@ -40,7 +40,9 @@ func NewMemory() *Memory {
 }
 
 func (m *Memory) Store() []byte {
-	return m.store
+	// Clamp the capacity so callers cannot append into the unallocated tail of
+	// the backing array, which Resize may later hand back as zeroed memory.
+	return m.store[:len(m.store):len(m.store)]
 }
 
 // Free returns the memory to the pool.
@@ -48,6 +50,7 @@ func (m *Memory) Free() {
 	// To reduce peak allocation, return only smaller memory instances to the pool.
 	const maxBufferSize = 16 << 10
 	if cap(m.store) <= maxBufferSize {
+		clear(m.store)
 		m.store = m.store[:0]
 		m.lastGasCost = 0
 		memoryPool.Put(m)
@@ -80,10 +83,14 @@ func (m *Memory) Set32(offset uint64, val *uint256.Int) {
 	val.PutUint256(m.store[offset:])
 }
 
-// Resize resizes the memory to size
+// Resize grows the memory to the requested size.
 func (m *Memory) Resize(size uint64) {
-	if uint64(m.Len()) < size {
-		m.store = append(m.store, make([]byte, size-uint64(m.Len()))...)
+	if uint64(len(m.store)) < size {
+		if uint64(cap(m.store)) >= size {
+			m.store = m.store[:size]
+		} else {
+			m.store = append(m.store, make([]byte, size-uint64(len(m.store)))...)
+		}
 	}
 }
 
@@ -105,8 +112,11 @@ func (m *Memory) GetPtr(offset, size uint64) []byte {
 		return nil
 	}
 
-	// memory is always resized before being accessed, no need to check bounds
-	return m.store[offset : offset+size]
+	// memory is always resized before being accessed, no need to check bounds.
+	// The capacity is clamped so callers cannot append into the unallocated
+	// tail of the backing array, which Resize may later hand back as zeroed
+	// memory.
+	return m.store[offset : offset+size : offset+size]
 }
 
 // Len returns the length of the backing slice
@@ -116,7 +126,8 @@ func (m *Memory) Len() int {
 
 // Data returns the backing slice
 func (m *Memory) Data() []byte {
-	return m.store
+	// Capacity is clamped, see Store.
+	return m.store[:len(m.store):len(m.store)]
 }
 
 // Copy copies data from the src position slice into the dst position.
