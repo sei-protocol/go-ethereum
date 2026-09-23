@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
+	"sync"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -60,6 +61,37 @@ func TestStoreCapture(t *testing.T) {
 	if logger.storage[contract.Address()][index] != exp {
 		t.Errorf("expected %x, got %x", exp, logger.storage[contract.Address()][index])
 	}
+}
+
+func TestStructLoggerStopReason(t *testing.T) {
+	logger := NewStructLogger(nil)
+	stopErr := errors.New("stop error")
+	stopped := make(chan struct{})
+	go func() {
+		logger.Stop(stopErr)
+		close(stopped)
+	}()
+	<-stopped
+
+	_, resultErr := logger.GetResult()
+	if !errors.Is(resultErr, stopErr) {
+		t.Fatalf("unexpected result error: have %v, want %v", resultErr, stopErr)
+	}
+}
+
+func TestStructLoggerStopRace(t *testing.T) {
+	logger := NewStructLogger(nil)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		logger.Stop(errors.New("stop error"))
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = logger.GetResult()
+	}()
+	wg.Wait()
 }
 
 // Tests that blank fields don't appear in logs when JSON marshalled, to reduce
