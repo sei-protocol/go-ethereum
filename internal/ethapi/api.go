@@ -1274,7 +1274,18 @@ func AccessList(ctx context.Context, b Backend, blockNrOrHash rpc.BlockNumberOrH
 		if msg.BlobGasFeeCap != nil && msg.BlobGasFeeCap.BitLen() == 0 {
 			evm.Context.BlobBaseFee = new(big.Int)
 		}
+
+		// Watch ctx for the duration of this EVM run, same as doCall's
+		// applyMessageWithEVM, so a deadline or cancellation aborts execution
+		// already in progress instead of only being observed between iterations.
+		go func() {
+			<-ctx.Done()
+			evm.Cancel()
+		}()
 		res, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(msg.GasLimit))
+		if evm.Cancelled() {
+			return nil, 0, nil, ctx.Err()
+		}
 		if err != nil {
 			return nil, 0, nil, fmt.Errorf("failed to apply transaction: %v err: %v", args.ToTransaction(types.LegacyTxType).Hash(), err)
 		}
