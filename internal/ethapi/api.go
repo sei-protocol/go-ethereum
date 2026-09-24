@@ -1278,11 +1278,13 @@ func AccessList(ctx context.Context, b Backend, blockNrOrHash rpc.BlockNumberOrH
 		// Watch ctx for the duration of this EVM run, same as doCall's
 		// applyMessageWithEVM, so a deadline or cancellation aborts execution
 		// already in progress instead of only being observed between iterations.
+		runCtx, cancel := context.WithCancel(ctx)
 		go func() {
-			<-ctx.Done()
+			<-runCtx.Done()
 			evm.Cancel()
 		}()
 		res, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(msg.GasLimit))
+		cancel()
 		if evm.Cancelled() {
 			return nil, 0, nil, ctx.Err()
 		}
