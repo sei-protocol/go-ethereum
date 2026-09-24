@@ -62,6 +62,7 @@ type Server struct {
 	wsConcurrentBudget       *semaphore.Weighted
 	admissionEventHook       func(reason string)
 	wsAdmissionTimeout       time.Duration
+	deadlineHook             deadlineHook
 }
 
 // NewServer creates a new server instance with no registered handlers.
@@ -141,6 +142,16 @@ func (s *Server) SetWSAdmissionTimeout(timeout time.Duration) {
 	s.wsAdmissionTimeout = timeout
 }
 
+// SetDeadlineHook registers a hook that wraps every RPC method dispatch,
+// including *_subscribe setup calls, across all transports. The hook receives
+// the request context and full "namespace_method" name, and returns the context
+// used for the callback plus a CancelFunc invoked after it returns.
+//
+// Call this before serving requests.
+func (s *Server) SetDeadlineHook(hook deadlineHook) {
+	s.deadlineHook = hook
+}
+
 func (s *Server) recomputeWSConcurrentBudget() {
 	limit := s.wsConcurrentRequestBytes
 	if limit <= 0 {
@@ -188,6 +199,7 @@ func (s *Server) ServeCodec(codec ServerCodec, options CodecOption) {
 		readLimit:          s.readLimit,
 		admissionEventHook: s.admissionEventHook,
 		wsAdmissionTimeout: s.wsAdmissionTimeout,
+		deadlineHook:       s.deadlineHook,
 	}
 	c := initClient(codec, &s.services, cfg)
 	<-codec.closed()
@@ -221,7 +233,7 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 		return
 	}
 
-	h := newHandler(ctx, codec, s.idgen, &s.services, s.batchItemLimit, s.batchResponseLimit, nil, s.readLimit, nil, s.wsAdmissionTimeout)
+	h := newHandler(ctx, codec, s.idgen, &s.services, s.batchItemLimit, s.batchResponseLimit, nil, s.readLimit, nil, s.wsAdmissionTimeout, s.deadlineHook)
 	h.allowSubscribe = false
 	attachHandler(codec, h)
 	defer h.close(io.EOF, nil)
