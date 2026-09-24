@@ -18,6 +18,7 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -93,6 +94,59 @@ func TestServerDeadlineHookAppliesToHTTP(t *testing.T) {
 	defer mu.Unlock()
 	if len(gotMethods) != 1 || gotMethods[0] != "test_block" {
 		t.Fatalf("hook saw methods %v, want [test_block]", gotMethods)
+	}
+}
+
+// TestServerDeadlineHookTimeoutErrorShape checks that a method failing after
+// the hook's deadline passed reports the same error as the server's own
+// request timeout, so clients see one timeout shape regardless of which
+// mechanism bounded the call.
+func TestServerDeadlineHookTimeoutErrorShape(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer()
+	defer server.Stop()
+	server.SetDeadlineHook(func(ctx context.Context, method string) (context.Context, context.CancelFunc) {
+		return context.WithTimeout(ctx, 50*time.Millisecond)
+	})
+	client := DialInProc(server)
+	defer client.Close()
+
+	err := client.CallContext(context.Background(), nil, "test_block")
+	var rpcErr Error
+	if !errors.As(err, &rpcErr) {
+		t.Fatalf("error %v (%T) is not an rpc.Error", err, err)
+	}
+	if rpcErr.ErrorCode() != errcodeTimeout {
+		t.Errorf("error code is %d, want %d", rpcErr.ErrorCode(), errcodeTimeout)
+	}
+	if rpcErr.Error() != errMsgTimeout {
+		t.Errorf("error message is %q, want %q", rpcErr.Error(), errMsgTimeout)
+	}
+}
+
+// TestServerDeadlineHookCancelKeepsMethodError checks the other half of that
+// contract: a hook that cancels without setting a deadline is not a timeout,
+// so the method's own error reaches the client unchanged.
+func TestServerDeadlineHookCancelKeepsMethodError(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer()
+	defer server.Stop()
+	server.SetDeadlineHook(func(ctx context.Context, method string) (context.Context, context.CancelFunc) {
+		hookCtx, cancel := context.WithCancel(ctx)
+		time.AfterFunc(50*time.Millisecond, cancel)
+		return hookCtx, cancel
+	})
+	client := DialInProc(server)
+	defer client.Close()
+
+	err := client.CallContext(context.Background(), nil, "test_block")
+	if err == nil {
+		t.Fatal("expected an error from a call cancelled by the deadline hook")
+	}
+	if err.Error() == errMsgTimeout {
+		t.Fatal("cancellation without a deadline was reported as a timeout")
 	}
 }
 

@@ -72,6 +72,10 @@ type Server struct {
 //
 // A deadline only cancels the derived context. Method callbacks must observe
 // context cancellation for the deadline to stop their work.
+//
+// A method that fails after the deadline passed reports the server's standard
+// timeout error (-32002, "request timed out") instead of its own. Anything
+// else, including cancellation without a deadline, is reported as-is.
 type DeadlineHook func(ctx context.Context, method string) (context.Context, context.CancelFunc)
 
 // NewServer creates a new server instance with no registered handlers.

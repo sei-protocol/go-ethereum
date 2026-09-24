@@ -724,8 +724,11 @@ func (h *handler) handleSubscribe(cp *callProc, msg *jsonrpcMessage) *jsonrpcMes
 // path (handleCall) and the *_subscribe setup path (handleSubscribe) both
 // reach it here, so neither needs its own deadline logic.
 func (h *handler) runMethod(ctx context.Context, msg *jsonrpcMessage, callb *callback, args []reflect.Value) *jsonrpcMessage {
+	parentCtx := ctx
+	var hookCtx context.Context
 	if h.deadlineHook != nil {
-		hookCtx, cancel := h.deadlineHook(ctx, msg.Method)
+		var cancel context.CancelFunc
+		hookCtx, cancel = h.deadlineHook(ctx, msg.Method)
 		// Keep dispatch safe if a misconfigured hook violates the documented
 		// non-nil return contract.
 		if hookCtx != nil {
@@ -737,6 +740,13 @@ func (h *handler) runMethod(ctx context.Context, msg *jsonrpcMessage, callb *cal
 	}
 	result, err := callb.call(ctx, msg.Method, args)
 	if err != nil {
+		// A hook deadline reports the same error as the handler's own
+		// request-timeout path instead of whatever the method returned for its
+		// cancelled context. Requiring the parent to still be live keeps a
+		// client disconnect or an outer timeout from being reported as one.
+		if hookCtx != nil && errors.Is(hookCtx.Err(), context.DeadlineExceeded) && parentCtx.Err() == nil {
+			return msg.errorResponse(&internalServerError{errcodeTimeout, errMsgTimeout})
+		}
 		return msg.errorResponse(err)
 	}
 	return msg.response(result)
