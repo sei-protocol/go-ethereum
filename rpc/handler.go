@@ -76,8 +76,8 @@ type handler struct {
 	// oversize_frame.
 	admissionEventHook func(reason string)
 	wsAdmissionTimeout time.Duration
-	// deadlineHook bounds every method dispatch in runMethod; see Server.SetDeadlineHook.
-	deadlineHook deadlineHook
+	// deadlineHook applies a context to every method dispatch in runMethod; see Server.SetDeadlineHook.
+	deadlineHook DeadlineHook
 	subLock      sync.Mutex
 	serverSubs   map[ID]*Subscription
 }
@@ -108,7 +108,7 @@ func wsAdmissionTimeoutOrDefault(timeout time.Duration) time.Duration {
 	return defaultWSAdmissionTimeout
 }
 
-func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *serviceRegistry, batchRequestLimit, batchResponseMaxSize int, wsConcurrentBudget *semaphore.Weighted, readLimit int64, admissionEventHook func(reason string), wsAdmissionTimeout time.Duration, deadlineHook deadlineHook) *handler {
+func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *serviceRegistry, batchRequestLimit, batchResponseMaxSize int, wsConcurrentBudget *semaphore.Weighted, readLimit int64, admissionEventHook func(reason string), wsAdmissionTimeout time.Duration, deadlineHook DeadlineHook) *handler {
 	rootCtx, cancelRoot := context.WithCancel(connCtx)
 	h := &handler{
 		reg:                  reg,
@@ -720,14 +720,20 @@ func (h *handler) handleSubscribe(cp *callProc, msg *jsonrpcMessage) *jsonrpcMes
 }
 
 // runMethod runs the Go callback for an RPC method. When a deadlineHook is
-// installed, it bounds this call for every method dispatch — the plain call
+// installed, it applies its context to every method dispatch — the plain call
 // path (handleCall) and the *_subscribe setup path (handleSubscribe) both
 // reach it here, so neither needs its own deadline logic.
 func (h *handler) runMethod(ctx context.Context, msg *jsonrpcMessage, callb *callback, args []reflect.Value) *jsonrpcMessage {
 	if h.deadlineHook != nil {
-		var cancel context.CancelFunc
-		ctx, cancel = h.deadlineHook(ctx, msg.Method)
-		defer cancel()
+		hookCtx, cancel := h.deadlineHook(ctx, msg.Method)
+		// Keep dispatch safe if a misconfigured hook violates the documented
+		// non-nil return contract.
+		if hookCtx != nil {
+			ctx = hookCtx
+		}
+		if cancel != nil {
+			defer cancel()
+		}
 	}
 	result, err := callb.call(ctx, msg.Method, args)
 	if err != nil {

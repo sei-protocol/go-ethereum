@@ -94,7 +94,7 @@ type Client struct {
 	readLimit            int64
 	admissionEventHook   func(reason string)
 	wsAdmissionTimeout   time.Duration
-	deadlineHook         deadlineHook
+	deadlineHook         DeadlineHook
 
 	// writeConn is used for writing to the connection on the caller's goroutine. It should
 	// only be accessed outside of dispatch, with the write lock held. The write lock is

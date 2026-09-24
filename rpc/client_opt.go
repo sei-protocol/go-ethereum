@@ -17,7 +17,6 @@
 package rpc
 
 import (
-	"context"
 	"net/http"
 	"time"
 
@@ -48,10 +47,8 @@ type clientConfig struct {
 	readLimit          int64
 	admissionEventHook func(reason string)
 	wsAdmissionTimeout time.Duration
-	deadlineHook       deadlineHook
+	deadlineHook       DeadlineHook
 }
-
-type deadlineHook func(ctx context.Context, method string) (context.Context, context.CancelFunc)
 
 func (cfg *clientConfig) initHeaders() {
 	if cfg.httpHeaders == nil {
