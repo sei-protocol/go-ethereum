@@ -209,3 +209,42 @@ func TestServerDeadlineHookAppliesToSubscribe(t *testing.T) {
 		t.Fatalf("hook saw methods %v, want [nftest_subscribe]", gotMethods)
 	}
 }
+
+// blockingSubService offers a subscription whose setup runs until its context
+// ends, so a deadline can expire before the subscription is ever created.
+type blockingSubService struct{}
+
+func (s *blockingSubService) Block(ctx context.Context) (*Subscription, error) {
+	<-ctx.Done()
+	return nil, errors.New("context canceled in blockingsub_block")
+}
+
+// TestServerDeadlineHookSubscribeSetupTimeout checks that a deadline reached
+// during *_subscribe setup reports the same timeout error as a plain call,
+// rather than the error the setup returned for its cancelled context.
+func TestServerDeadlineHookSubscribeSetupTimeout(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer()
+	defer server.Stop()
+	if err := server.RegisterName("blockingsub", new(blockingSubService)); err != nil {
+		t.Fatal("can't register service:", err)
+	}
+	server.SetDeadlineHook(func(ctx context.Context, method string) (context.Context, context.CancelFunc) {
+		return context.WithTimeout(ctx, 50*time.Millisecond)
+	})
+	client := DialInProc(server)
+	defer client.Close()
+
+	_, err := client.Subscribe(context.Background(), "blockingsub", make(chan int), "block")
+	var rpcErr Error
+	if !errors.As(err, &rpcErr) {
+		t.Fatalf("error %v (%T) is not an rpc.Error", err, err)
+	}
+	if rpcErr.ErrorCode() != errcodeTimeout {
+		t.Errorf("error code is %d, want %d", rpcErr.ErrorCode(), errcodeTimeout)
+	}
+	if rpcErr.Error() != errMsgTimeout {
+		t.Errorf("error message is %q, want %q", rpcErr.Error(), errMsgTimeout)
+	}
+}
