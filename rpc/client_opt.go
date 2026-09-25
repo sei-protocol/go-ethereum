@@ -47,6 +47,7 @@ type clientConfig struct {
 	readLimit          int64
 	admissionEventHook func(reason string)
 	wsAdmissionTimeout time.Duration
+	deadlineHook       DeadlineHook
 }
 
 func (cfg *clientConfig) initHeaders() {

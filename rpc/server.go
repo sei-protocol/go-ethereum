@@ -62,7 +62,21 @@ type Server struct {
 	wsConcurrentBudget       *semaphore.Weighted
 	admissionEventHook       func(reason string)
 	wsAdmissionTimeout       time.Duration
+	deadlineHook             DeadlineHook
 }
+
+// DeadlineHook derives the context used to invoke an RPC method. The returned
+// context must be non-nil and derived from ctx so that request values and
+// cancellation are preserved. The returned CancelFunc must also be non-nil;
+// the server calls it after the method callback returns.
+//
+// A deadline only cancels the derived context. Method callbacks must observe
+// context cancellation for the deadline to stop their work.
+//
+// A method that fails after the deadline passed reports the server's standard
+// timeout error (-32002, "request timed out") instead of its own. Anything
+// else, including cancellation without a deadline, is reported as-is.
+type DeadlineHook func(ctx context.Context, method string) (context.Context, context.CancelFunc)
 
 // NewServer creates a new server instance with no registered handlers.
 func NewServer() *Server {
@@ -141,6 +155,17 @@ func (s *Server) SetWSAdmissionTimeout(timeout time.Duration) {
 	s.wsAdmissionTimeout = timeout
 }
 
+// SetDeadlineHook registers a hook that applies a context to every RPC method
+// dispatch across all transports, including *_subscribe setup and
+// *_unsubscribe calls. The hook receives the request context and full
+// "namespace_method" name.
+//
+// SetDeadlineHook is not safe for concurrent use. Call it before serving
+// requests.
+func (s *Server) SetDeadlineHook(hook DeadlineHook) {
+	s.deadlineHook = hook
+}
+
 func (s *Server) recomputeWSConcurrentBudget() {
 	limit := s.wsConcurrentRequestBytes
 	if limit <= 0 {
@@ -188,6 +213,7 @@ func (s *Server) ServeCodec(codec ServerCodec, options CodecOption) {
 		readLimit:          s.readLimit,
 		admissionEventHook: s.admissionEventHook,
 		wsAdmissionTimeout: s.wsAdmissionTimeout,
+		deadlineHook:       s.deadlineHook,
 	}
 	c := initClient(codec, &s.services, cfg)
 	<-codec.closed()
@@ -221,7 +247,7 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 		return
 	}
 
-	h := newHandler(ctx, codec, s.idgen, &s.services, s.batchItemLimit, s.batchResponseLimit, nil, s.readLimit, nil, s.wsAdmissionTimeout)
+	h := newHandler(ctx, codec, s.idgen, &s.services, s.batchItemLimit, s.batchResponseLimit, nil, s.readLimit, nil, s.wsAdmissionTimeout, s.deadlineHook)
 	h.allowSubscribe = false
 	attachHandler(codec, h)
 	defer h.close(io.EOF, nil)

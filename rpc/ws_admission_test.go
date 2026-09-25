@@ -798,6 +798,7 @@ func newAdmissionTestHandler(budget int64, readLimit int64, timeout time.Duratio
 		readLimit,
 		hook,
 		timeout,
+		nil,
 	)
 }
 

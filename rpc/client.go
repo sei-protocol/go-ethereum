@@ -94,6 +94,7 @@ type Client struct {
 	readLimit            int64
 	admissionEventHook   func(reason string)
 	wsAdmissionTimeout   time.Duration
+	deadlineHook         DeadlineHook
 
 	// writeConn is used for writing to the connection on the caller's goroutine. It should
 	// only be accessed outside of dispatch, with the write lock held. The write lock is
@@ -125,7 +126,7 @@ func (c *Client) newClientConn(conn ServerCodec) *clientConn {
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, clientContextKey{}, c)
 	ctx = context.WithValue(ctx, peerInfoContextKey{}, conn.peerInfo())
-	handler := newHandler(ctx, conn, c.idgen, c.services, c.batchItemLimit, c.batchResponseMaxSize, c.wsConcurrentBudget, c.readLimit, c.admissionEventHook, c.wsAdmissionTimeout)
+	handler := newHandler(ctx, conn, c.idgen, c.services, c.batchItemLimit, c.batchResponseMaxSize, c.wsConcurrentBudget, c.readLimit, c.admissionEventHook, c.wsAdmissionTimeout, c.deadlineHook)
 	attachHandler(conn, handler)
 	return &clientConn{conn, handler}
 }
@@ -274,6 +275,7 @@ func initClient(conn ServerCodec, services *serviceRegistry, cfg *clientConfig) 
 		readLimit:            cfg.readLimit,
 		admissionEventHook:   cfg.admissionEventHook,
 		wsAdmissionTimeout:   cfg.wsAdmissionTimeout,
+		deadlineHook:         cfg.deadlineHook,
 		writeConn:            conn,
 		close:                make(chan struct{}),
 		closing:              make(chan struct{}),

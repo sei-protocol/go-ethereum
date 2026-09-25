@@ -76,8 +76,10 @@ type handler struct {
 	// oversize_frame.
 	admissionEventHook func(reason string)
 	wsAdmissionTimeout time.Duration
-	subLock            sync.Mutex
-	serverSubs         map[ID]*Subscription
+	// deadlineHook applies a context to every method dispatch in runMethod; see Server.SetDeadlineHook.
+	deadlineHook DeadlineHook
+	subLock      sync.Mutex
+	serverSubs   map[ID]*Subscription
 }
 
 type callProc struct {
@@ -106,7 +108,7 @@ func wsAdmissionTimeoutOrDefault(timeout time.Duration) time.Duration {
 	return defaultWSAdmissionTimeout
 }
 
-func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *serviceRegistry, batchRequestLimit, batchResponseMaxSize int, wsConcurrentBudget *semaphore.Weighted, readLimit int64, admissionEventHook func(reason string), wsAdmissionTimeout time.Duration) *handler {
+func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *serviceRegistry, batchRequestLimit, batchResponseMaxSize int, wsConcurrentBudget *semaphore.Weighted, readLimit int64, admissionEventHook func(reason string), wsAdmissionTimeout time.Duration, deadlineHook DeadlineHook) *handler {
 	rootCtx, cancelRoot := context.WithCancel(connCtx)
 	h := &handler{
 		reg:                  reg,
@@ -125,6 +127,7 @@ func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *
 		readLimit:            readLimit,
 		admissionEventHook:   admissionEventHook,
 		wsAdmissionTimeout:   wsAdmissionTimeoutOrDefault(wsAdmissionTimeout),
+		deadlineHook:         deadlineHook,
 	}
 	if conn.remoteAddr() != "" {
 		h.log = h.log.New("conn", conn.remoteAddr())
@@ -716,10 +719,34 @@ func (h *handler) handleSubscribe(cp *callProc, msg *jsonrpcMessage) *jsonrpcMes
 	return h.runMethod(ctx, msg, callb, args)
 }
 
-// runMethod runs the Go callback for an RPC method.
+// runMethod runs the Go callback for an RPC method. When a deadlineHook is
+// installed, it applies its context to every method dispatch — the plain call
+// path (handleCall) and the *_subscribe setup path (handleSubscribe) both
+// reach it here, so neither needs its own deadline logic.
 func (h *handler) runMethod(ctx context.Context, msg *jsonrpcMessage, callb *callback, args []reflect.Value) *jsonrpcMessage {
+	parentCtx := ctx
+	var hookCtx context.Context
+	if h.deadlineHook != nil {
+		var cancel context.CancelFunc
+		hookCtx, cancel = h.deadlineHook(ctx, msg.Method)
+		// Keep dispatch safe if a misconfigured hook violates the documented
+		// non-nil return contract.
+		if hookCtx != nil {
+			ctx = hookCtx
+		}
+		if cancel != nil {
+			defer cancel()
+		}
+	}
 	result, err := callb.call(ctx, msg.Method, args)
 	if err != nil {
+		// A hook deadline reports the same error as the handler's own
+		// request-timeout path instead of whatever the method returned for its
+		// cancelled context. Requiring the parent to still be live keeps a
+		// client disconnect or an outer timeout from being reported as one.
+		if hookCtx != nil && errors.Is(hookCtx.Err(), context.DeadlineExceeded) && parentCtx.Err() == nil {
+			return msg.errorResponse(&internalServerError{errcodeTimeout, errMsgTimeout})
+		}
 		return msg.errorResponse(err)
 	}
 	return msg.response(result)
