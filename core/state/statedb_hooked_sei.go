@@ -86,3 +86,12 @@ type HookableStateDB interface {
 }
 
 var _ HookableStateDB = (*StateDB)(nil)
+
+// UnwrapHookedState returns the state wrapped by NewHookedState, or db itself
+// if it is not a hooked state.
+func UnwrapHookedState(db HookableStateDB) HookableStateDB {
+	if h, ok := db.(*hookedStateDB); ok {
+		return h.inner
+	}
+	return db
+}

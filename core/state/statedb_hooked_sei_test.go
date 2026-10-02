@@ -40,6 +40,9 @@ func TestHookedStateWrapsForeignStateDB(t *testing.T) {
 	hooked.AddBalance(addr, uint256.NewInt(1), tracing.BalanceChangeUnspecified)
 	hooked.SelfDestruct(addr)
 	hooked.Finalise(params.Rules{IsEIP158: true})
+	if UnwrapHookedState(hooked) != (foreignStateDB{inner}) {
+		t.Fatal("UnwrapHookedState did not return the inner state")
+	}
 	if changes == 0 {
 		t.Fatal("balance hook not invoked")
 	}
