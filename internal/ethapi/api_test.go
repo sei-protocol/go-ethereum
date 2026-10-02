@@ -574,7 +574,7 @@ func (b testBackend) BlockByNumberOrHash(ctx context.Context, blockNrOrHash rpc.
 func (b testBackend) GetBody(ctx context.Context, hash common.Hash, number rpc.BlockNumber) (*types.Body, error) {
 	return b.chain.GetBlock(hash, uint64(number.Int64())).Body(), nil
 }
-func (b testBackend) StateAndHeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*state.StateDB, *types.Header, error) {
+func (b testBackend) StateAndHeaderByNumber(ctx context.Context, number rpc.BlockNumber) (vm.SeiStateDB, *types.Header, error) {
 	if number == rpc.PendingBlockNumber {
 		panic("pending state not implemented")
 	}
@@ -586,9 +586,9 @@ func (b testBackend) StateAndHeaderByNumber(ctx context.Context, number rpc.Bloc
 		return nil, nil, errors.New("header not found")
 	}
 	stateDb, err := b.chain.StateAt(header.Root, header.Number, header.Time)
-	return stateDb, header, err
+	return vm.WrapStateDB(stateDb), header, err
 }
-func (b testBackend) StateAndHeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*state.StateDB, *types.Header, error) {
+func (b testBackend) StateAndHeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (vm.SeiStateDB, *types.Header, error) {
 	if blockNr, ok := blockNrOrHash.Number(); ok {
 		return b.StateAndHeaderByNumber(ctx, blockNr)
 	}
@@ -609,7 +609,7 @@ func (b testBackend) GetReceipts(ctx context.Context, hash common.Hash) (types.R
 	receipts := rawdb.ReadReceipts(b.db, hash, header.Number.Uint64(), header.Time, b.chain.Config())
 	return receipts, nil
 }
-func (b testBackend) GetEVM(ctx context.Context, state *state.StateDB, header *types.Header, vmConfig *vm.Config, blockContext *vm.BlockContext) *vm.EVM {
+func (b testBackend) GetEVM(ctx context.Context, msg *core.Message, state vm.StateDB, header *types.Header, vmConfig *vm.Config, blockContext *vm.BlockContext) *vm.EVM {
 	if vmConfig == nil {
 		vmConfig = b.chain.GetVMConfig()
 	}
@@ -618,6 +618,9 @@ func (b testBackend) GetEVM(ctx context.Context, state *state.StateDB, header *t
 		context = *blockContext
 	}
 	return vm.NewEVM(context, state, b.chain.Config(), *vmConfig)
+}
+func (b testBackend) GetCustomPrecompiles(int64) map[common.Address]vm.CustomPrecompiledContract {
+	return nil
 }
 func (b testBackend) SubscribeChainEvent(ch chan<- core.ChainEvent) event.Subscription {
 	return b.chainFeed.Subscribe(ch)

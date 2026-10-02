@@ -453,10 +453,10 @@ func (b *backendMock) BlockByNumberOrHash(ctx context.Context, blockNrOrHash rpc
 func (b *backendMock) GetBody(ctx context.Context, hash common.Hash, number rpc.BlockNumber) (*types.Body, error) {
 	return nil, nil
 }
-func (b *backendMock) StateAndHeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*state.StateDB, *types.Header, error) {
+func (b *backendMock) StateAndHeaderByNumber(ctx context.Context, number rpc.BlockNumber) (vm.SeiStateDB, *types.Header, error) {
 	return nil, nil, nil
 }
-func (b *backendMock) StateAndHeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*state.StateDB, *types.Header, error) {
+func (b *backendMock) StateAndHeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (vm.SeiStateDB, *types.Header, error) {
 	return nil, nil, nil
 }
 func (b *backendMock) Pending() (*types.Block, types.Receipts, *state.StateDB) { return nil, nil, nil }
@@ -469,7 +469,7 @@ func (b *backendMock) GetCanonicalReceipt(tx *types.Transaction, blockHash commo
 func (b *backendMock) GetLogs(ctx context.Context, blockHash common.Hash, number uint64) ([][]*types.Log, error) {
 	return nil, nil
 }
-func (b *backendMock) GetEVM(ctx context.Context, state *state.StateDB, header *types.Header, vmConfig *vm.Config, blockCtx *vm.BlockContext) *vm.EVM {
+func (b *backendMock) GetEVM(ctx context.Context, msg *core.Message, state vm.StateDB, header *types.Header, vmConfig *vm.Config, blockCtx *vm.BlockContext) *vm.EVM {
 	return nil
 }
 func (b *backendMock) SubscribeChainEvent(ch chan<- core.ChainEvent) event.Subscription { return nil }
@@ -503,6 +503,9 @@ func (b *backendMock) Engine() consensus.Engine { return nil }
 
 func (b *backendMock) CurrentView() *filtermaps.ChainView           { return nil }
 func (b *backendMock) NewMatcherBackend() filtermaps.MatcherBackend { return nil }
+func (b *backendMock) GetCustomPrecompiles(int64) map[common.Address]vm.CustomPrecompiledContract {
+	return nil
+}
 
 func (b *backendMock) HistoryPruningCutoff() uint64       { return 0 }
 func (b *backendMock) HistoryRetention() HistoryRetention { return HistoryRetention{} }

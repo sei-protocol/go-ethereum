@@ -20,9 +20,25 @@ package core
 
 import (
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
+)
+
+// BlockState is the state needed to finish a transaction or block: the
+// intermediate root, receipt logs and transaction index. It is satisfied by
+// *state.StateDB and vm.SeiStateDB.
+type BlockState interface {
+	IntermediateRoot(rules params.Rules) common.Hash
+	GetLogs(hash common.Hash, blockNumber uint64, blockHash common.Hash, blockTime uint64) []*types.Log
+	TxIndex() int
+}
+
+var (
+	_ BlockState = (*state.StateDB)(nil)
+	_ BlockState = (vm.SeiStateDB)(nil)
 )
 
 // StateTransition is a state transition whose fee handling and nonce

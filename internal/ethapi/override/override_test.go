@@ -101,7 +101,7 @@ func TestStateOverrideMovePrecompile(t *testing.T) {
 	for i, tt := range testSuite {
 		cpy := maps.Clone(precompiles)
 		// Apply overrides
-		err := tt.overrides.Apply(statedb, cpy)
+		err := tt.overrides.Apply(vm.WrapStateDB(statedb), cpy)
 		if tt.fail {
 			if err == nil {
 				t.Errorf("test %d: want error, have nothing", i)

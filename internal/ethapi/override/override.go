@@ -25,7 +25,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
@@ -57,7 +56,7 @@ func (diff *StateOverride) has(address common.Address) bool {
 }
 
 // Apply overrides the fields of specified accounts into the given state.
-func (diff *StateOverride) Apply(statedb *state.StateDB, precompiles vm.PrecompiledContracts) error {
+func (diff *StateOverride) Apply(statedb vm.SeiStateDB, precompiles vm.PrecompiledContracts) error {
 	if diff == nil {
 		return nil
 	}

@@ -197,7 +197,7 @@ func (b *gasBudget) consume(amount uint64) error {
 // it is not safe for concurrent use.
 type simulator struct {
 	b              Backend
-	state          *state.StateDB
+	state          vm.SeiStateDB
 	base           *types.Header
 	chainConfig    *params.ChainConfig
 	budget         *gasBudget
@@ -313,7 +313,7 @@ func (sim *simulator) processBlock(ctx context.Context, block *simBlock, header,
 	if hooks := tracer.Hooks(); hooks != nil {
 		tracingStateDB = state.NewHookedState(sim.state, hooks)
 	}
-	evm := vm.NewEVM(blockContext, tracingStateDB, sim.chainConfig, *vmConfig)
+	evm := vm.NewEVMWithCustomPrecompiles(blockContext, tracingStateDB, sim.chainConfig, *vmConfig, sim.b.GetCustomPrecompiles(header.Number.Int64()))
 	defer evm.Release()
 
 	// It is possible to override precompiles with EVM bytecode, or

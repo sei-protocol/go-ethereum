@@ -406,13 +406,17 @@ func (api *BlockChainAPI) GetProof(ctx context.Context, address common.Address, 
 	if statedb == nil || err != nil {
 		return nil, err
 	}
+	native, ok := vm.NativeState(statedb)
+	if !ok {
+		return nil, errors.New("proofs are not supported by this state")
+	}
 	codeHash := statedb.GetCodeHash(address)
 	storageRoot := statedb.GetStorageRoot(address)
 
 	if len(keys) > 0 {
 		var storageTrie state.Trie
 		if storageRoot != types.EmptyRootHash && storageRoot != (common.Hash{}) {
-			st, err := statedb.Database().OpenStorageTrie(header.Root, address, storageRoot, nil)
+			st, err := native.Database().OpenStorageTrie(header.Root, address, storageRoot, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -446,7 +450,7 @@ func (api *BlockChainAPI) GetProof(ctx context.Context, address common.Address, 
 		}
 	}
 	// Create the accountProof.
-	tr, err := statedb.Database().OpenTrie(header.Root)
+	tr, err := native.Database().OpenTrie(header.Root)
 	if err != nil {
 		return nil, err
 	}
@@ -754,7 +758,7 @@ func (context *ChainContext) GetHeaderByHash(hash common.Hash) *types.Header {
 	return header
 }
 
-func doCall(ctx context.Context, b Backend, args TransactionArgs, state *state.StateDB, header *types.Header, overrides *override.StateOverride, blockOverrides *override.BlockOverrides, timeout time.Duration, globalGasCap uint64) (*core.ExecutionResult, error) {
+func doCall(ctx context.Context, b Backend, args TransactionArgs, state vm.SeiStateDB, header *types.Header, overrides *override.StateOverride, blockOverrides *override.BlockOverrides, timeout time.Duration, globalGasCap uint64) (*core.ExecutionResult, error) {
 	blockCtx := core.NewEVMBlockContext(header, NewChainContext(ctx, b), nil)
 	if blockOverrides != nil {
 		if err := blockOverrides.Apply(&blockCtx); err != nil {
@@ -790,7 +794,7 @@ func doCall(ctx context.Context, b Backend, args TransactionArgs, state *state.S
 	return applyMessage(ctx, b, args, state, header, timeout, gp, &blockCtx, &vm.Config{NoBaseFee: true}, precompiles)
 }
 
-func applyMessage(ctx context.Context, b Backend, args TransactionArgs, state *state.StateDB, header *types.Header, timeout time.Duration, gp *core.GasPool, blockContext *vm.BlockContext, vmConfig *vm.Config, precompiles vm.PrecompiledContracts) (*core.ExecutionResult, error) {
+func applyMessage(ctx context.Context, b Backend, args TransactionArgs, state vm.SeiStateDB, header *types.Header, timeout time.Duration, gp *core.GasPool, blockContext *vm.BlockContext, vmConfig *vm.Config, precompiles vm.PrecompiledContracts) (*core.ExecutionResult, error) {
 	// Get a new instance of the EVM.
 	available := gp.Available(b.ChainConfig().IsAmsterdam(header.Number, header.Time))
 	if err := args.CallDefaults(available, blockContext.BaseFee, b.ChainConfig().ChainID); err != nil {
@@ -805,7 +809,7 @@ func applyMessage(ctx context.Context, b Backend, args TransactionArgs, state *s
 	if msg.BlobGasFeeCap != nil && msg.BlobGasFeeCap.BitLen() == 0 {
 		blockContext.BlobBaseFee = new(big.Int)
 	}
-	evm := b.GetEVM(ctx, state, header, vmConfig, blockContext)
+	evm := b.GetEVM(ctx, msg, state, header, vmConfig, blockContext)
 	defer evm.Release()
 	if precompiles != nil {
 		evm.SetPrecompiles(precompiles)
@@ -946,9 +950,11 @@ func DoEstimateGas(ctx context.Context, b Backend, args TransactionArgs, blockNr
 		Config:      b.ChainConfig(),
 		Chain:       NewChainContext(ctx, b),
 		Header:      header,
-		State:       vm.WrapStateDB(state),
+		State:       state,
 		BlobBaseFee: blobBaseFee,
 		ErrorRatio:  estimateGasErrorRatio,
+
+		CustomPrecompiles: b.GetCustomPrecompiles(header.Number.Int64()),
 	}
 	// Set any required transaction default, but make sure the gas cap itself is not messed with
 	// if it was not specified in the original argument list.
@@ -1380,6 +1386,9 @@ func AccessList(ctx context.Context, b Backend, blockNrOrHash rpc.BlockNumberOrH
 	isPostMerge := header.Difficulty.Sign() == 0
 	// Retrieve the precompiles since they don't need to be added to the access list
 	precompiles := vm.ActivePrecompiles(b.ChainConfig().Rules(header.Number, isPostMerge, header.Time))
+	for addr := range b.GetCustomPrecompiles(header.Number.Int64()) {
+		precompiles = append(precompiles, addr)
+	}
 
 	// addressesToExclude contains sender, receiver, precompiles and valid authorizations
 	addressesToExclude := map[common.Address]struct{}{args.from(): {}, to: {}}
@@ -1420,7 +1429,7 @@ func AccessList(ctx context.Context, b Backend, blockNrOrHash rpc.BlockNumberOrH
 		// Apply the transaction with the access list tracer
 		tracer := logger.NewAccessListTracer(accessList, addressesToExclude)
 		config := vm.Config{Tracer: tracer.Hooks(), NoBaseFee: true}
-		evm := b.GetEVM(ctx, statedb, header, &config, nil)
+		evm := b.GetEVM(ctx, msg, statedb, header, &config, nil)
 
 		// Lower the basefee to 0 to avoid breaking EVM
 		// invariants (basefee < feecap).

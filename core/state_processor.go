@@ -253,14 +253,14 @@ func ProcessWithdrawals(withdrawals types.Withdrawals, evm *vm.EVM, blockAccessI
 // ApplyTransactionWithEVM attempts to apply a transaction to the given state database
 // and uses the input parameters for its environment similar to ApplyTransaction. However,
 // this method takes an already created EVM instance as input.
-func ApplyTransactionWithEVM(ctx context.Context, msg *Message, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, blockTime uint64, tx *types.Transaction, evm *vm.EVM) (*types.Receipt, *bal.ConstructionBlockAccessList, error) {
+func ApplyTransactionWithEVM(ctx context.Context, msg *Message, gp *GasPool, statedb BlockState, blockNumber *big.Int, blockHash common.Hash, blockTime uint64, tx *types.Transaction, evm *vm.EVM) (*types.Receipt, *bal.ConstructionBlockAccessList, error) {
 	return applyTransactionWithEVM(ctx, msg, gp, statedb, blockNumber, blockHash, blockTime, tx, evm, true)
 }
 
 // applyTransactionWithEVM is ApplyTransactionWithEVM with the receipt bloom
 // filter optional. The block processor leaves it out and lets its receipt
 // pipeline hash the logs instead.
-func applyTransactionWithEVM(ctx context.Context, msg *Message, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, blockTime uint64, tx *types.Transaction, evm *vm.EVM, withBloom bool) (receipt *types.Receipt, bal *bal.ConstructionBlockAccessList, err error) {
+func applyTransactionWithEVM(ctx context.Context, msg *Message, gp *GasPool, statedb BlockState, blockNumber *big.Int, blockHash common.Hash, blockTime uint64, tx *types.Transaction, evm *vm.EVM, withBloom bool) (receipt *types.Receipt, bal *bal.ConstructionBlockAccessList, err error) {
 	_, _, spanEnd := telemetry.StartSpan(ctx, "core.ApplyTransactionWithEVM",
 		telemetry.StringAttribute("tx.hash", tx.Hash().Hex()),
 		telemetry.IntAttribute("tx.index", statedb.TxIndex()),
@@ -289,8 +289,8 @@ func applyTransactionWithEVM(ctx context.Context, msg *Message, gp *GasPool, sta
 	}
 	// Merge the tx-local access event into the "block-local" one, in order to collect
 	// all values, so that the witness can be built.
-	if statedb.Database().Type().Is(state.TypeUBT) {
-		statedb.AccessEvents().Merge(evm.AccessEvents)
+	if native, ok := statedb.(*state.StateDB); ok && native.Database().Type().Is(state.TypeUBT) {
+		native.AccessEvents().Merge(evm.AccessEvents)
 	}
 	receipt = makeReceipt(evm, result, statedb, blockNumber, blockHash, blockTime, tx, gp.CumulativeUsed(), root)
 	if withBloom {
@@ -300,7 +300,7 @@ func applyTransactionWithEVM(ctx context.Context, msg *Message, gp *GasPool, sta
 }
 
 // MakeReceipt generates the receipt object for a transaction given its execution result.
-func MakeReceipt(evm *vm.EVM, result *ExecutionResult, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, blockTime uint64, tx *types.Transaction, cumulativeGas uint64, root []byte) *types.Receipt {
+func MakeReceipt(evm *vm.EVM, result *ExecutionResult, statedb BlockState, blockNumber *big.Int, blockHash common.Hash, blockTime uint64, tx *types.Transaction, cumulativeGas uint64, root []byte) *types.Receipt {
 	receipt := makeReceipt(evm, result, statedb, blockNumber, blockHash, blockTime, tx, cumulativeGas, root)
 	receipt.Bloom = types.CreateBloom(receipt)
 	return receipt
@@ -308,7 +308,7 @@ func MakeReceipt(evm *vm.EVM, result *ExecutionResult, statedb *state.StateDB, b
 
 // makeReceipt generates the receipt object without its bloom filter, which the
 // caller either computes itself or leaves to the receipt pipeline.
-func makeReceipt(evm *vm.EVM, result *ExecutionResult, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, blockTime uint64, tx *types.Transaction, cumulativeGas uint64, root []byte) *types.Receipt {
+func makeReceipt(evm *vm.EVM, result *ExecutionResult, statedb BlockState, blockNumber *big.Int, blockHash common.Hash, blockTime uint64, tx *types.Transaction, cumulativeGas uint64, root []byte) *types.Receipt {
 	// Create a new receipt for the transaction, storing the intermediate root
 	// and gas used by the tx.
 	//
@@ -542,7 +542,7 @@ func onSystemCallStart(tracer *tracing.Hooks, ctx *tracing.VMContext) {
 
 // AssembleBlock finalizes the state and assembles the block with provided
 // body and receipts.
-func AssembleBlock(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, body *types.Body, receipts []*types.Receipt, blockAccessList *bal.ConstructionBlockAccessList) *types.Block {
+func AssembleBlock(chain consensus.ChainHeaderReader, header *types.Header, state BlockState, body *types.Body, receipts []*types.Receipt, blockAccessList *bal.ConstructionBlockAccessList) *types.Block {
 	// Assign the post-transition state root
 	rules := chain.Config().Rules(header.Number, header.Difficulty.Sign() == 0, header.Time)
 	header.Root = state.IntermediateRoot(rules)
