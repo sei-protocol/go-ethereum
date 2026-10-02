@@ -255,11 +255,25 @@ func (b *U256) UnmarshalJSON(input []byte) error {
 		(*uint256.Int)(b).Clear()
 		return nil
 	}
-	err := (*uint256.Int)(b).SetFromHex(string(input[1 : len(input)-1]))
+	err := (*uint256.Int)(b).SetFromHex(trimHexLeadingZeros(string(input[1 : len(input)-1])))
 	if err != nil {
 		return &json.UnmarshalTypeError{Value: err.Error(), Type: u256T}
 	}
 	return nil
+}
+
+// trimHexLeadingZeros drops leading zero digits from a 0x-prefixed quantity,
+// keeping at least one digit, so that clients sending e.g. "0x01" are accepted
+// (Sei).
+func trimHexLeadingZeros(s string) string {
+	if len(s) < 4 || (s[:2] != "0x" && s[:2] != "0X") || s[2] != '0' {
+		return s
+	}
+	i := 2
+	for i < len(s)-1 && s[i] == '0' {
+		i++
+	}
+	return s[:2] + s[i:]
 }
 
 // UnmarshalText implements encoding.TextUnmarshaler
