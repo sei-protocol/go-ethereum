@@ -26,6 +26,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
@@ -109,6 +110,16 @@ func (evm *EVM) GetPrecompiles() []common.Address {
 		}
 	}
 	return res
+}
+
+// delegationTarget returns the EIP-7702 delegation target of addr. The code
+// size is checked first so non-delegated code is never loaded; StateDB
+// implementations must guarantee GetCodeSize(addr) == len(GetCode(addr)).
+func (evm *EVM) delegationTarget(addr common.Address) (common.Address, bool) {
+	if !types.IsDelegationDesignatorLength(evm.StateDB.GetCodeSize(addr)) {
+		return common.Address{}, false
+	}
+	return types.ParseDelegation(evm.StateDB.GetCode(addr))
 }
 
 // GetDepth returns the current call depth.

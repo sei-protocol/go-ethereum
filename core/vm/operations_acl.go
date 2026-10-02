@@ -22,7 +22,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/core/tracing"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -409,7 +408,7 @@ func makeCallVariantGasCallEIP7702(intrinsicFunc intrinsicGasFunc, coldCost uint
 		}
 
 		// Check if code is a delegation and if so, charge for resolution.
-		if target, ok := types.ParseDelegation(evm.StateDB.GetCode(addr)); ok {
+		if target, ok := evm.delegationTarget(addr); ok {
 			if evm.StateDB.AddressInAccessList(target) {
 				eip7702Cost = params.WarmStorageReadCostEIP2929
 			} else {
@@ -498,7 +497,7 @@ func makeCallVariantGasCallEIP8037(executionFunc executionGasFunc, stateGasFunc 
 		}
 
 		// EIP-7702 delegation check.
-		if target, ok := types.ParseDelegation(evm.StateDB.GetCode(addr)); ok {
+		if target, ok := evm.delegationTarget(addr); ok {
 			if evm.StateDB.AddressInAccessList(target) {
 				eip7702Cost = params.WarmAccountAccessAmsterdam
 			} else {
