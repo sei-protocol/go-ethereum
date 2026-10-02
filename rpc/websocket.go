@@ -289,6 +289,12 @@ type websocketCodec struct {
 	wg           sync.WaitGroup
 	pingReset    chan struct{}
 	pongReceived chan struct{}
+
+	// Sei: decodeReadActive is true while a frame is being read after pre-decode budget
+	// has been reserved. It is guarded by jsonCodec.encMu, the same lock pingLoop
+	// already holds around its own SetReadDeadline calls, so pingLoop's pong-triggered
+	// deadline clear can never race past a decode-owned deadline.
+	decodeReadActive bool
 }
 
 func newWebsocketCodec(conn *websocket.Conn, host string, req http.Header, readLimit int64) ServerCodec {
@@ -303,11 +309,12 @@ func newWebsocketCodec(conn *websocket.Conn, host string, req http.Header, readL
 		return conn.WriteMessage(websocket.TextMessage, buf)
 	}
 	// Every frame is one message, so it can be read in one go and checked once.
+	// Sei: the read is admission-controlled, see readFrameSei.
+	var wc *websocketCodec
 	readFrame := func() ([]byte, error) {
-		_, frame, err := conn.ReadMessage()
-		return frame, err
+		return wc.readFrameSei()
 	}
-	wc := &websocketCodec{
+	wc = &websocketCodec{
 		jsonCodec:    newFuncCodec(conn, encodeMsg, encodeBatch, nil, readFrame),
 		conn:         conn,
 		pingReset:    make(chan struct{}, 1),
@@ -393,12 +400,21 @@ func (wc *websocketCodec) pingLoop() {
 			wc.jsonCodec.encMu.Lock()
 			wc.conn.SetWriteDeadline(time.Now().Add(wsPingWriteTimeout))
 			wc.conn.WriteMessage(websocket.PingMessage, nil)
-			wc.conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
+			// Sei: a frame being read already owns the read deadline; don't override it
+			// with the longer pong-liveness deadline, or a stalling peer that keeps
+			// ponging could ride out the decode bound indefinitely.
+			if !wc.decodeReadActive {
+				wc.conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
+			}
 			wc.jsonCodec.encMu.Unlock()
 			pingTimer.Reset(wsPingInterval)
 
 		case <-wc.pongReceived:
-			wc.conn.SetReadDeadline(time.Time{})
+			wc.jsonCodec.encMu.Lock()
+			if !wc.decodeReadActive {
+				wc.conn.SetReadDeadline(time.Time{})
+			}
+			wc.jsonCodec.encMu.Unlock()
 		}
 	}
 }

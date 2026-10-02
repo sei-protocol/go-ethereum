@@ -165,7 +165,7 @@ func TestParseMessage(t *testing.T) {
 			if !json.Valid([]byte(tc.input)) {
 				t.Fatalf("test input is not valid JSON: %s", tc.input)
 			}
-			got, batch := parseMessage(json.RawMessage(tc.input))
+			got, batch := parseMessage(json.RawMessage(tc.input), 0)
 			if batch != tc.batch {
 				t.Fatalf("batch = %v, want %v", batch, tc.batch)
 			}
@@ -358,7 +358,7 @@ func BenchmarkParseMessage(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(int64(len(raw)))
 			for b.Loop() {
-				parseMessage(raw)
+				parseMessage(raw, 0)
 			}
 		})
 	}

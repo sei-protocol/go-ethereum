@@ -43,6 +43,7 @@ type clientConfig struct {
 	idgen              func() ID
 	batchItemLimit     int
 	batchResponseLimit int
+	sei                handlerSeiConfig // Sei: admission control and deadline hook
 }
 
 func (cfg *clientConfig) initHeaders() {

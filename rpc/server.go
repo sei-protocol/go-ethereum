@@ -57,6 +57,8 @@ type Server struct {
 	httpBodyLimit      int
 	wsReadLimit        int64
 	tracerProvider     trace.TracerProvider
+
+	serverSei // Sei: deny list, WS admission control, deadline hook
 }
 
 // NewServer creates a new server instance with no registered handlers.
@@ -99,6 +101,7 @@ func (s *Server) SetHTTPBodyLimit(limit int) {
 // This method should be called before processing any requests via Websocket server.
 func (s *Server) SetWebsocketReadLimit(limit int64) {
 	s.wsReadLimit = limit
+	s.recomputeWSConcurrentBudget() // Sei
 }
 
 // RegisterName creates a service for the given receiver type under the given name. When no
@@ -126,6 +129,7 @@ func (s *Server) ServeCodec(codec ServerCodec, options CodecOption) {
 		idgen:              s.idgen,
 		batchItemLimit:     s.batchItemLimit,
 		batchResponseLimit: s.batchResponseLimit,
+		sei:                s.handlerSeiConfig(),
 	}
 	c := initClient(codec, &s.services, cfg)
 	<-codec.closed()
@@ -168,11 +172,12 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 		return
 	}
 
-	h := newHandler(ctx, codec, s.idgen, &s.services, s.batchItemLimit, s.batchResponseLimit, s.tracerProvider)
+	h := newHandler(ctx, codec, s.idgen, &s.services, s.batchItemLimit, s.batchResponseLimit, s.tracerProvider, s.httpHandlerSeiConfig())
 	h.allowSubscribe = false
+	attachHandler(codec, h) // Sei
 	defer h.close(io.EOF, nil)
 
-	reqs, batch, err := codec.readBatch()
+	reqs, batch, _, err := codec.readBatch()
 	if err != nil {
 		if msg := messageForReadError(err); msg != "" {
 			resp := errorMessage(&invalidMessageError{msg})
@@ -180,10 +185,13 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 		}
 		return
 	}
+	if s.rejectDenied(ctx, codec, reqs) { // Sei
+		return
+	}
 	if batch {
-		h.handleBatch(reqs)
+		h.handleBatch(reqs, nil)
 	} else {
-		h.handleMsg(reqs[0])
+		h.handleMsg(reqs[0], nil)
 	}
 }
 

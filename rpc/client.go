@@ -88,6 +88,7 @@ type Client struct {
 	// config fields
 	batchItemLimit       int
 	batchResponseMaxSize int
+	sei                  handlerSeiConfig // Sei: admission control and deadline hook
 
 	// writeConn is used for writing to the connection on the caller's goroutine. It should
 	// only be accessed outside of dispatch, with the write lock held. The write lock is
@@ -119,7 +120,8 @@ func (c *Client) newClientConn(conn ServerCodec) *clientConn {
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, clientContextKey{}, c)
 	ctx = context.WithValue(ctx, peerInfoContextKey{}, conn.peerInfo())
-	handler := newHandler(ctx, conn, c.idgen, c.services, c.batchItemLimit, c.batchResponseMaxSize, nil)
+	handler := newHandler(ctx, conn, c.idgen, c.services, c.batchItemLimit, c.batchResponseMaxSize, nil, c.sei)
+	attachHandler(conn, handler) // Sei
 	return &clientConn{conn, handler}
 }
 
@@ -129,8 +131,9 @@ func (cc *clientConn) close(err error, inflightReq *requestOp) {
 }
 
 type readOp struct {
-	msgs  []*jsonrpcMessage
-	batch bool
+	msgs    []*jsonrpcMessage
+	batch   bool
+	release func() // Sei: returns the admission budget held for msgs
 }
 
 // requestOp represents a pending request. This is used for both batch and non-batch
@@ -247,6 +250,7 @@ func initClient(conn ServerCodec, services *serviceRegistry, cfg *clientConfig) 
 		idgen:                cfg.idgen,
 		batchItemLimit:       cfg.batchItemLimit,
 		batchResponseMaxSize: cfg.batchResponseLimit,
+		sei:                  cfg.sei,
 		writeConn:            conn,
 		close:                make(chan struct{}),
 		closing:              make(chan struct{}),
@@ -663,7 +667,7 @@ func (c *Client) dispatch(codec ServerCodec) {
 	}()
 
 	// Spawn the initial read loop.
-	go c.read(codec)
+	go c.read(conn)
 
 	for {
 		select {
@@ -673,9 +677,9 @@ func (c *Client) dispatch(codec ServerCodec) {
 		// Read path:
 		case op := <-c.readOp:
 			if op.batch {
-				conn.handler.handleBatch(op.msgs)
+				conn.handler.handleBatch(op.msgs, op.release)
 			} else {
-				conn.handler.handleMsg(op.msgs[0])
+				conn.handler.handleMsg(op.msgs[0], op.release)
 			}
 
 		case err := <-c.readErr:
@@ -695,9 +699,9 @@ func (c *Client) dispatch(codec ServerCodec) {
 				conn.close(errClientReconnected, lastOp)
 				c.drainRead()
 			}
-			go c.read(newcodec)
-			reading = true
 			conn = c.newClientConn(newcodec)
+			go c.read(conn)
+			reading = true
 			// Re-register the in-flight request on the new handler
 			// because that's where it will be sent.
 			conn.handler.addRequestOp(lastOp)
@@ -729,7 +733,10 @@ func (c *Client) dispatch(codec ServerCodec) {
 func (c *Client) drainRead() {
 	for {
 		select {
-		case <-c.readOp:
+		case op := <-c.readOp:
+			if op.release != nil {
+				op.release()
+			}
 		case <-c.readErr:
 			return
 		}
@@ -737,17 +744,24 @@ func (c *Client) drainRead() {
 }
 
 // read decodes RPC messages from a codec, feeding them into dispatch.
-func (c *Client) read(codec ServerCodec) {
+func (c *Client) read(conn *clientConn) {
+	codec := conn.codec
 	for {
-		msgs, batch, err := codec.readBatch()
+		msgs, batch, rawLen, err := codec.readBatch()
 		if _, ok := err.(*json.SyntaxError); ok {
 			msg := errorMessage(&parseError{err.Error()})
 			codec.writeJSON(context.Background(), msg, true)
 		}
 		if err != nil {
+			handleReadErrorSei(codec, err) // Sei
 			c.readErr <- err
 			return
 		}
-		c.readOp <- readOp{msgs, batch}
+		release, err := conn.handler.admitFrame(codec, msgs, batch, rawLen) // Sei
+		if err != nil {
+			c.readErr <- err
+			return
+		}
+		c.readOp <- readOp{msgs, batch, release}
 	}
 }

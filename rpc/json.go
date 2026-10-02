@@ -204,6 +204,7 @@ type jsonCodec struct {
 	encodeMsg   encodeMsgFunc    // single-message encoder
 	encodeBatch encodeBatchFunc  // batch encoder
 	conn        deadlineCloser
+	handler     *handler // Sei: set by the read loop; source of this codec's read limits
 }
 
 type encodeMsgFunc = func(ctx context.Context, msg *jsonrpcMessage, isError bool) error
@@ -312,12 +313,16 @@ func (c *jsonCodec) remoteAddr() string {
 	return c.remote
 }
 
-func (c *jsonCodec) readBatch() (messages []*jsonrpcMessage, batch bool, err error) {
+func (c *jsonCodec) readBatch() (messages []*jsonrpcMessage, batch bool, rawLen int64, err error) {
+	if err = c.beforeReadSei(); err != nil { // Sei: admission control
+		return nil, false, 0, err
+	}
 	rawmsg, err := c.readMessage()
 	if err != nil {
-		return nil, false, err
+		c.readFailedSei()
+		return nil, false, 0, err
 	}
-	messages, batch = parseMessage(rawmsg)
+	messages, batch = parseMessage(rawmsg, c.batchItemLimit())
 	for i, msg := range messages {
 		if msg == nil {
 			// Message is JSON 'null'. Replace with zero value so it
@@ -325,7 +330,7 @@ func (c *jsonCodec) readBatch() (messages []*jsonrpcMessage, batch bool, err err
 			messages[i] = new(jsonrpcMessage)
 		}
 	}
-	return messages, batch, nil
+	return messages, batch, int64(len(rawmsg)), nil
 }
 
 // readMessage returns the bytes of the next message, checked to be valid JSON.
@@ -399,8 +404,9 @@ func (c *jsonCodec) closed() <-chan interface{} {
 // parseMessage parses raw bytes as a (batch of) JSON-RPC message(s). There are no error
 // checks in this function because the raw message has already been syntax-checked when it
 // is called. Any non-JSON-RPC messages in the input return the zero value of
-// jsonrpcMessage.
-func parseMessage(raw json.RawMessage) ([]*jsonrpcMessage, bool) {
+// jsonrpcMessage. A batch is decoded to at most itemLimit+1 messages; an itemLimit of 0
+// means unlimited.
+func parseMessage(raw json.RawMessage, itemLimit int) ([]*jsonrpcMessage, bool) {
 	if !isBatch(raw) {
 		// readBatch rejects a nil message, which is what null must become.
 		if isJSONNull(raw) {
@@ -412,6 +418,14 @@ func parseMessage(raw json.RawMessage) ([]*jsonrpcMessage, bool) {
 	}
 	var msgs []*jsonrpcMessage
 	forEachJSONElement(raw, func(elem []byte) {
+		// Sei: stop one element past the limit rather than at it. That surplus element
+		// is what handleBatch's own count check reads to reject the batch, and keeping
+		// the rest would allocate a jsonrpcMessage per element of an array the server
+		// has already decided not to serve. handleBatch rejects on
+		// len(msgs) > h.batchRequestLimit, so keep this and that comparison in agreement.
+		if itemLimit > 0 && len(msgs) > itemLimit {
+			return
+		}
 		// readBatch rejects a nil message, which is what null must become.
 		if isJSONNull(elem) {
 			msgs = append(msgs, nil)

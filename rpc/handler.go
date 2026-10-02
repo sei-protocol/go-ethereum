@@ -69,6 +69,7 @@ type handler struct {
 	batchRequestLimit    int
 	batchResponseMaxSize int
 	tracerProvider       trace.TracerProvider
+	handlerSei           // Sei: admission control and deadline hook
 
 	subLock    sync.Mutex
 	serverSubs map[ID]*Subscription
@@ -80,7 +81,7 @@ type callProc struct {
 	isBatch   bool
 }
 
-func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *serviceRegistry, batchRequestLimit, batchResponseMaxSize int, tracerProvider trace.TracerProvider) *handler {
+func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *serviceRegistry, batchRequestLimit, batchResponseMaxSize int, tracerProvider trace.TracerProvider, sei handlerSeiConfig) *handler {
 	rootCtx, cancelRoot := context.WithCancel(connCtx)
 	h := &handler{
 		reg:                  reg,
@@ -96,6 +97,7 @@ func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *
 		batchRequestLimit:    batchRequestLimit,
 		batchResponseMaxSize: batchResponseMaxSize,
 		tracerProvider:       tracerProvider,
+		handlerSei:           newHandlerSei(sei),
 	}
 	if conn.remoteAddr() != "" {
 		h.log = h.log.New("conn", conn.remoteAddr())
@@ -176,7 +178,9 @@ func (b *batchCallBuffer) doWrite(ctx context.Context, conn jsonWriter, isErrorR
 }
 
 // handleBatch executes all messages in a batch and returns the responses.
-func (h *handler) handleBatch(msgs []*jsonrpcMessage) {
+// Sei: release returns the batch's admission budget; it is called exactly once.
+func (h *handler) handleBatch(msgs []*jsonrpcMessage, release func()) {
+	release = releaseOnce(release)
 	// For valid batches, filter response messages and subscription notifications
 	// out of msgs here.
 	var calls []*jsonrpcMessage
@@ -188,12 +192,14 @@ func (h *handler) handleBatch(msgs []*jsonrpcMessage) {
 		})
 		if len(calls) == 0 {
 			// Batch was entirely responses to our own requests; nothing to dispatch.
+			release()
 			return
 		}
 	}
 
 	// Process calls on a goroutine because they may block indefinitely:
 	h.startCallProc(func(cp *callProc) {
+		defer release()
 		// Top-level batch SERVER span.
 		var batchSpanEnd func(*error)
 		cp.ctx, batchSpanEnd = telemetry.StartBatchServerSpan(cp.ctx, h.tracer(), "jsonrpc", len(msgs))
@@ -274,6 +280,7 @@ func (h *handler) handleBatch(msgs []*jsonrpcMessage) {
 		}
 
 		h.addSubscriptions(cp.notifiers)
+		release()
 		callBuffer.write(batchCtx, h.conn)
 		for _, n := range cp.notifiers {
 			n.activate()
@@ -296,16 +303,25 @@ func (h *handler) respondWithBatchTooLarge(cp *callProc, batch []*jsonrpcMessage
 }
 
 // handleMsg handles a single non-batch message.
-func (h *handler) handleMsg(msg *jsonrpcMessage) {
+// Sei: release returns the message's admission budget; it is called exactly once.
+func (h *handler) handleMsg(msg *jsonrpcMessage, release func()) {
+	release = releaseOnce(release)
 	msgs := []*jsonrpcMessage{msg}
+	var callStarted bool
 	h.handleResponses(msgs, func(msg *jsonrpcMessage) {
+		callStarted = true
 		h.startCallProc(func(cp *callProc) {
-			h.handleNonBatchCall(cp, msg)
+			defer release()
+			h.handleNonBatchCall(cp, msg, release)
 		})
 	})
+	if !callStarted {
+		release()
+	}
 }
 
-func (h *handler) handleNonBatchCall(cp *callProc, msg *jsonrpcMessage) {
+func (h *handler) handleNonBatchCall(cp *callProc, msg *jsonrpcMessage, release func()) {
+	release = releaseOnce(release)
 	var (
 		responded     sync.Once
 		timer         *time.Timer
@@ -342,6 +358,7 @@ func (h *handler) handleNonBatchCall(cp *callProc, msg *jsonrpcMessage) {
 		timer.Stop()
 	}
 	h.addSubscriptions(cp.notifiers)
+	release()
 	if answer != nil {
 		responded.Do(func() {
 			if answer.Error != nil {
@@ -664,9 +681,11 @@ func (h *handler) tracer() trace.Tracer {
 
 // runMethod runs the Go callback for an RPC method.
 func (h *handler) runMethod(ctx context.Context, msg *jsonrpcMessage, callb *callback, args []reflect.Value, attributes ...telemetry.Attribute) *jsonrpcMessage {
+	ctx, hook := h.startDeadlineHook(ctx, msg.Method) // Sei
+	defer hook.done()
 	result, err := callb.call(ctx, msg.Method, args)
 	if err != nil {
-		return msg.errorResponse(err)
+		return msg.errorResponse(hook.mapErr(err))
 	}
 	_, _, spanEnd := telemetry.StartSpanWithTracer(ctx, h.tracer(), "rpc.encodeJSONResponse", attributes...)
 	response := msg.response(result)
