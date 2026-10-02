@@ -652,6 +652,9 @@ func opCreate(pc *uint64, evm *EVM, scope *ScopeContext) ([]byte, error) {
 
 	child := scope.Contract.forwardGas(forward, evm.Config.Tracer, tracing.GasChangeCallContractCreation)
 	res, addr, result, suberr := evm.create(scope.Contract.Address(), input, child, &value, contractAddr, CREATE)
+	if isAbortError(suberr) {
+		return res, suberr
+	}
 
 	// Push item on the stack based on the returned error. If the ruleset is
 	// homestead we must check for CodeStoreOutOfGasError (homestead only
@@ -705,6 +708,9 @@ func opCreate2(pc *uint64, evm *EVM, scope *ScopeContext) ([]byte, error) {
 	stackvalue := size
 	child := scope.Contract.forwardGas(forward, evm.Config.Tracer, tracing.GasChangeCallContractCreation2)
 	res, addr, result, suberr := evm.create(scope.Contract.Address(), input, child, &endowment, contractAddr, CREATE2)
+	if isAbortError(suberr) {
+		return res, suberr
+	}
 	// Push item on the stack based on the returned error.
 	if suberr != nil {
 		stackvalue.Clear()
@@ -755,6 +761,9 @@ func opCall(pc *uint64, evm *EVM, scope *ScopeContext) ([]byte, error) {
 	// needs to be handed off to the child here.
 	childBudget := NewGasBudget(gas, scope.Contract.Gas.StateGas)
 	ret, result, err := evm.Call(scope.Contract.Address(), toAddr, args, childBudget, &value)
+	if isAbortError(err) {
+		return ret, err
+	}
 
 	if err != nil {
 		temp.Clear()
@@ -797,6 +806,9 @@ func opCallCode(pc *uint64, evm *EVM, scope *ScopeContext) ([]byte, error) {
 	// child here.
 	childBudget := NewGasBudget(gas, scope.Contract.Gas.StateGas)
 	ret, result, err := evm.CallCode(scope.Contract.Address(), toAddr, args, childBudget, &value)
+	if isAbortError(err) {
+		return ret, err
+	}
 	if err != nil {
 		temp.Clear()
 	} else {
@@ -830,6 +842,9 @@ func opDelegateCall(pc *uint64, evm *EVM, scope *ScopeContext) ([]byte, error) {
 	// child here.
 	childBudget := NewGasBudget(gas, scope.Contract.Gas.StateGas)
 	ret, result, err := evm.DelegateCall(scope.Contract.Caller(), scope.Contract.Address(), toAddr, args, childBudget, scope.Contract.value)
+	if isAbortError(err) {
+		return ret, err
+	}
 	if err != nil {
 		temp.Clear()
 	} else {
@@ -862,6 +877,9 @@ func opStaticCall(pc *uint64, evm *EVM, scope *ScopeContext) ([]byte, error) {
 	// child here.
 	childBudget := NewGasBudget(gas, scope.Contract.Gas.StateGas)
 	ret, result, err := evm.StaticCall(scope.Contract.Address(), toAddr, args, childBudget)
+	if isAbortError(err) {
+		return ret, err
+	}
 	if err != nil {
 		temp.Clear()
 	} else {

@@ -124,6 +124,9 @@ type EVM struct {
 	// precompiles holds the precompiled contracts for the current epoch
 	precompiles map[common.Address]PrecompiledContract
 
+	// customPrecompiles holds chain-specific precompiles (Sei)
+	customPrecompiles map[common.Address]CustomPrecompiledContract
+
 	// jumpDests stores results of JUMPDEST analysis.
 	jumpDests JumpDestCache
 
@@ -284,6 +287,8 @@ func (evm *EVM) Call(caller common.Address, addr common.Address, input []byte, g
 	}
 	snapshot := evm.StateDB.Snapshot()
 	p, isPrecompile := evm.precompile(addr)
+	cp, isCustomPrecompile := evm.customPrecompile(addr)
+	isPrecompile = isPrecompile || isCustomPrecompile
 	if !evm.StateDB.Exist(addr) {
 		if !isPrecompile && evm.chainRules.IsEIP4762 && !isSystemCall(caller) {
 			// Add proof of absence to witness
@@ -313,7 +318,9 @@ func (evm *EVM) Call(caller common.Address, addr common.Address, input []byte, g
 		evm.Context.Transfer(evm.StateDB, caller, addr, value, &evm.chainRules)
 	}
 
-	if isPrecompile {
+	if isCustomPrecompile {
+		ret, gas, err = RunCustomPrecompiledContract(cp, evm, caller, caller, addr, input, gas, value.ToBig(), evm.Config.Tracer, evm.readOnly, false)
+	} else if isPrecompile {
 		ret, gas, err = RunPrecompiledContract(evm.StateDB, p, addr, input, gas, evm.Config.Tracer, evm.chainRules, evm.precompileCache)
 	} else {
 		// Initialise a new contract and set the code that is to be used by the EVM.
@@ -330,6 +337,10 @@ func (evm *EVM) Call(caller common.Address, addr common.Address, input []byte, g
 		}
 	}
 
+	// Abort errors propagate without reverting or consuming the frame (Sei)
+	if isAbortError(err) {
+		return ret, gas, err
+	}
 	// Calculate the remaining gas at the end of frame
 	exitGas := gas.Exit(err)
 	if err != nil {
@@ -365,7 +376,9 @@ func (evm *EVM) CallCode(caller common.Address, addr common.Address, input []byt
 	snapshot := evm.StateDB.Snapshot()
 
 	// It is allowed to call precompiles, even via delegatecall
-	if p, isPrecompile := evm.precompile(addr); isPrecompile {
+	if cp, isCustomPrecompile := evm.customPrecompile(addr); isCustomPrecompile {
+		ret, gas, err = RunCustomPrecompiledContract(cp, evm, caller, caller, addr, input, gas, value.ToBig(), evm.Config.Tracer, evm.readOnly, true)
+	} else if p, isPrecompile := evm.precompile(addr); isPrecompile {
 		ret, gas, err = RunPrecompiledContract(evm.StateDB, p, addr, input, gas, evm.Config.Tracer, evm.chainRules, evm.precompileCache)
 	} else {
 		// Initialise a new contract and set the code that is to be used by the EVM.
@@ -376,6 +389,10 @@ func (evm *EVM) CallCode(caller common.Address, addr common.Address, input []byt
 		gas = contract.Gas
 	}
 
+	// Abort errors propagate without reverting or consuming the frame (Sei)
+	if isAbortError(err) {
+		return ret, gas, err
+	}
 	// Calculate the remaining gas at the end of frame
 	exitGas := gas.Exit(err)
 	if err != nil {
@@ -406,7 +423,9 @@ func (evm *EVM) DelegateCall(originCaller common.Address, caller common.Address,
 	snapshot := evm.StateDB.Snapshot()
 
 	// It is allowed to call precompiles, even via delegatecall
-	if p, isPrecompile := evm.precompile(addr); isPrecompile {
+	if cp, isCustomPrecompile := evm.customPrecompile(addr); isCustomPrecompile {
+		ret, gas, err = RunCustomPrecompiledContract(cp, evm, originCaller, caller, addr, input, gas, nil, evm.Config.Tracer, evm.readOnly, true)
+	} else if p, isPrecompile := evm.precompile(addr); isPrecompile {
 		ret, gas, err = RunPrecompiledContract(evm.StateDB, p, addr, input, gas, evm.Config.Tracer, evm.chainRules, evm.precompileCache)
 	} else {
 		contract := NewContract(originCaller, caller, value, gas, evm.jumpDests)
@@ -415,6 +434,10 @@ func (evm *EVM) DelegateCall(originCaller common.Address, caller common.Address,
 		gas = contract.Gas
 	}
 
+	// Abort errors propagate without reverting or consuming the frame (Sei)
+	if isAbortError(err) {
+		return ret, gas, err
+	}
 	// Calculate the remaining gas at the end of frame
 	exitGas := gas.Exit(err)
 	if err != nil {
@@ -453,7 +476,9 @@ func (evm *EVM) StaticCall(caller common.Address, addr common.Address, input []b
 	// future scenarios
 	evm.StateDB.AddBalance(addr, new(uint256.Int), tracing.BalanceChangeTouchAccount)
 
-	if p, isPrecompile := evm.precompile(addr); isPrecompile {
+	if cp, isCustomPrecompile := evm.customPrecompile(addr); isCustomPrecompile {
+		ret, gas, err = RunCustomPrecompiledContract(cp, evm, caller, caller, addr, input, gas, nil, evm.Config.Tracer, true, false)
+	} else if p, isPrecompile := evm.precompile(addr); isPrecompile {
 		ret, gas, err = RunPrecompiledContract(evm.StateDB, p, addr, input, gas, evm.Config.Tracer, evm.chainRules, evm.precompileCache)
 	} else {
 		contract := NewContract(caller, addr, new(uint256.Int), gas, evm.jumpDests)
@@ -462,6 +487,10 @@ func (evm *EVM) StaticCall(caller common.Address, addr common.Address, input []b
 		gas = contract.Gas
 	}
 
+	// Abort errors propagate without reverting or consuming the frame (Sei)
+	if isAbortError(err) {
+		return ret, gas, err
+	}
 	// Calculate the remaining gas at the end of frame
 	exitGas := gas.Exit(err)
 	if err != nil {
@@ -620,6 +649,9 @@ func (evm *EVM) create(caller common.Address, code []byte, gas GasBudget, value 
 	contract.IsDeployment = true
 
 	ret, err = evm.initNewContract(contract, address)
+	if isAbortError(err) {
+		return ret, address, contract.Gas, err
+	}
 
 	// Special case: ErrCodeStoreOutOfGas pre-Homestead does NOT roll back
 	// state and gas is preserved (i.e., treated as success).
