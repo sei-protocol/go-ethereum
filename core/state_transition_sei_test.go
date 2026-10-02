@@ -141,3 +141,27 @@ func TestSeiCustomPrecompileWarmed(t *testing.T) {
 		t.Errorf("custom precompile not in access list")
 	}
 }
+
+// The coinbase fee is derived from the block context's base fee, not from
+// msg.GasPrice, matching the v1.15.7 Sei fork when the two base fees differ.
+func TestSeiCoinbaseFeeUsesContextBaseFee(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		gasPrice, feeCap uint64
+		tipCap, want     uint64
+	}{
+		{"tip bound", 200, 200, 10, 110},        // min(200, 100+10)
+		{"fee cap bound", 105, 105, 10, 105},    // min(105, 100+10)
+		{"gas price ignored", 999, 120, 5, 105}, // min(120, 100+5)
+	} {
+		evm, statedb := newSeiTransitionEnv(t, true)
+		msg := seiTestMessage(0)
+		msg.GasPrice = uint256.NewInt(tc.gasPrice)
+		msg.GasFeeCap = uint256.NewInt(tc.feeCap)
+		msg.GasTipCap = uint256.NewInt(tc.tipCap)
+		res := runSeiTransition(t, evm, msg, true, true)
+		if have, want := statedb.GetBalance(seiTestCoinbase).Uint64(), res.UsedGas*tc.want; have != want {
+			t.Errorf("%s: coinbase balance have %d, want %d", tc.name, have, want)
+		}
+	}
+}

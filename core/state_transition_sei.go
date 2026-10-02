@@ -97,11 +97,26 @@ func (st *stateTransition) activePrecompiles(rules params.Rules) []common.Addres
 
 // coinbaseFeePerGas returns the fee per gas credited to the coinbase. When
 // ChainConfig.SeiCoinbaseReceivesBaseFee is set the base fee is not burned and
-// the coinbase receives the base fee plus the tip.
+// the coinbase receives base fee plus tip, where both are derived from the
+// block context's base fee (not msg.GasPrice, which Sei may have computed
+// against a different base fee):
+//
+//	London:     baseFee + min(gasTipCap, gasFeeCap-baseFee) = min(gasFeeCap, baseFee+gasTipCap)
+//	pre-London: baseFee + gasPrice
 func (st *stateTransition) coinbaseFeePerGas(effectiveTip *uint256.Int) *uint256.Int {
-	baseFee := st.evm.Context.BaseFee
-	if !st.evm.ChainConfig().SeiCoinbaseReceivesBaseFee || baseFee == nil || baseFee.Sign() == 0 {
+	if !st.evm.ChainConfig().SeiCoinbaseReceivesBaseFee {
 		return effectiveTip
 	}
-	return new(uint256.Int).Add(effectiveTip, uint256.MustFromBig(baseFee))
+	baseFee := new(uint256.Int)
+	if st.evm.Context.BaseFee != nil {
+		baseFee = uint256.MustFromBig(st.evm.Context.BaseFee)
+	}
+	if !st.rules().IsLondon || st.msg.GasFeeCap == nil || st.msg.GasTipCap == nil {
+		return new(uint256.Int).Add(baseFee, st.msg.GasPrice)
+	}
+	fee := new(uint256.Int).Add(baseFee, st.msg.GasTipCap)
+	if fee.Gt(st.msg.GasFeeCap) {
+		fee.Set(st.msg.GasFeeCap)
+	}
+	return fee
 }

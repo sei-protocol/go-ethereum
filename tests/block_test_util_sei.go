@@ -16,6 +16,8 @@
 
 package tests
 
+import "github.com/ethereum/go-ethereum/core/types"
+
 // Exported views of the block test fixture format (Sei: eth replay).
 type (
 	BtJSON   = btJSON
@@ -26,4 +28,9 @@ type (
 // JSON returns the decoded block test fixture.
 func (t *BlockTest) JSON() *BtJSON {
 	return &t.json
+}
+
+// Decode decodes the block's RLP.
+func (bb *BtBlock) Decode() (*types.Block, error) {
+	return bb.decode()
 }
