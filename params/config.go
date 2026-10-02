@@ -395,6 +395,8 @@ type ChainConfig struct {
 
 	// Custom gas params for sei-chain
 	SeiSstoreSetGasEIP2200 *uint64 `json:"sstoreSetGasEIP2200,omitempty"` // Once per SSTORE operation from clean zero to non-zero
+	// SeiCoinbaseReceivesBaseFee credits the base fee to the coinbase instead of burning it
+	SeiCoinbaseReceivesBaseFee bool `json:"seiCoinbaseReceivesBaseFee,omitempty"`
 
 	HomesteadBlock *big.Int `json:"homesteadBlock,omitempty"` // Homestead switch block (nil = no fork, 0 = already homestead)
 

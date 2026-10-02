@@ -402,15 +402,21 @@ type stateTransition struct {
 	gasRemaining vm.GasBudget
 	state        vm.StateDB
 	evm          *vm.EVM
+
+	// Sei: fee checks and gas purchase were done by the caller (ante handler)
+	feeCharged bool
+	// Sei: the caller owns nonce handling when false
+	shouldIncrementNonce bool
 }
 
 // newStateTransition initialises and returns a new state transition object.
 func newStateTransition(evm *vm.EVM, msg *Message, gp *GasPool) *stateTransition {
 	return &stateTransition{
-		gp:    gp,
-		evm:   evm,
-		msg:   msg,
-		state: evm.StateDB,
+		gp:                   gp,
+		evm:                  evm,
+		msg:                  msg,
+		state:                evm.StateDB,
+		shouldIncrementNonce: true,
 	}
 }
 
@@ -541,7 +547,7 @@ func (st *stateTransition) initRuntimeGasBudget(rules params.Rules, intrinsicGas
 //
 // The SkipNonceChecks / SkipTransactionChecks / NoBaseFee flags bypass
 // subsets of these checks for simulation paths (eth_call, eth_estimateGas).
-func (st *stateTransition) preCheck(rules params.Rules) error {
+func (st *stateTransition) statelessChecks(rules params.Rules) error {
 	// Only check transactions that are not fake
 	msg := st.msg
 	if !msg.SkipNonceChecks {
@@ -650,6 +656,17 @@ func (st *stateTransition) preCheck(rules params.Rules) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// preCheck validates the message, reserves block gas and pre-pays gas. Sei
+// skips validation and the pre-payment when the fee was already charged.
+func (st *stateTransition) preCheck(rules params.Rules) error {
+	if !st.feeCharged {
+		if err := st.statelessChecks(rules); err != nil {
+			return err
+		}
+	}
 	// Reserve the gas budget in the block gas pool
 	var err error
 	if rules.IsAmsterdam {
@@ -659,6 +676,9 @@ func (st *stateTransition) preCheck(rules params.Rules) error {
 	}
 	if err != nil {
 		return err
+	}
+	if st.feeCharged {
+		return nil
 	}
 	return st.buyGas()
 }
@@ -737,7 +757,7 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 	// - prepare accessList(post-berlin)
 	// - reset transient storage(EIP-1153)
 	// - enable block-level accessList construction (EIP-7928)
-	st.state.Prepare(rules, msg.From, st.evm.Context.Coinbase, msg.To, vm.ActivePrecompiles(rules), msg.AccessList)
+	st.state.Prepare(rules, msg.From, st.evm.Context.Coinbase, msg.To, st.activePrecompiles(rules), msg.AccessList)
 
 	// Initialize the running gas budget with the post-intrinsic remainder.
 	st.initRuntimeGasBudget(rules, intrinsicGas)
@@ -774,7 +794,7 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 		// the coinbase when simulating calls.
 	} else {
 		fee := new(uint256.Int).SetUint64(gasUsed)
-		fee.Mul(fee, effectiveTip)
+		fee.Mul(fee, st.coinbaseFeePerGas(effectiveTip))
 		st.state.AddBalance(st.evm.Context.Coinbase, fee, tracing.BalanceIncreaseRewardTransactionFee)
 
 		// add the coinbase to the witness iff the fee is greater than 0
@@ -846,7 +866,9 @@ func (st *stateTransition) executeCall(rules params.Rules, value *uint256.Int) (
 	msg := st.msg
 
 	// Increment the nonce for the next transaction.
-	st.state.SetNonce(msg.From, st.state.GetNonce(msg.From)+1, tracing.NonceChangeEoACall)
+	if st.shouldIncrementNonce {
+		st.state.SetNonce(msg.From, st.state.GetNonce(msg.From)+1, tracing.NonceChangeEoACall)
+	}
 
 	if rules.IsAmsterdam {
 		snapshot := st.state.Snapshot()
