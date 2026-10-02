@@ -22,8 +22,8 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/log"
@@ -40,9 +40,11 @@ type Options struct {
 	Config *params.ChainConfig // Chain configuration for hard fork selection
 	Chain  core.ChainContext   // Chain context to access past block hashes
 	Header *types.Header       // Header defining the block context to execute in
-	State  *state.StateDB      // Pre-state on top of which to estimate the gas
+	State  vm.SeiStateDB       // Pre-state on top of which to estimate the gas
 
 	BlobBaseFee *big.Int // BlobBaseFee optionally overrides the blob base fee in the execution context.
+
+	CustomPrecompiles map[common.Address]vm.CustomPrecompiledContract // Sei chain-specific precompiles
 
 	ErrorRatio float64 // Allowed overestimation ratio for faster estimation termination
 }
@@ -205,9 +207,16 @@ func Estimate(ctx context.Context, call *core.Message, opts *Options, gasCap uin
 // returns true if the transaction fails for a reason that might be related to
 // not enough gas. A non-nil error means execution failed due to reasons unrelated
 // to the gas limit.
-func execute(ctx context.Context, call *core.Message, opts *Options, gasLimit uint64) (bool, *core.ExecutionResult, error) {
+func execute(ctx context.Context, call *core.Message, opts *Options, gasLimit uint64) (failed bool, execResult *core.ExecutionResult, execErr error) {
 	// Configure the call for this specific execution (and revert the change after)
 	defer func(gas uint64) { call.GasLimit = gas }(call.GasLimit)
+	// Sei: the Cosmos gas meter signals out of gas by panicking; treat it as a
+	// gas-related failure.
+	defer func() {
+		if r := recover(); r != nil {
+			failed, execResult, execErr = true, nil, nil
+		}
+	}()
 	call.GasLimit = gasLimit
 
 	// Execute the call and separate execution faults caused by a lack of gas or
@@ -244,7 +253,8 @@ func run(ctx context.Context, call *core.Message, opts *Options) (*core.Executio
 	if call.BlobGasFeeCap != nil && call.BlobGasFeeCap.BitLen() == 0 {
 		evmContext.BlobBaseFee = new(big.Int)
 	}
-	evm := vm.NewEVM(evmContext, dirtyState, opts.Config, vm.Config{NoBaseFee: true})
+	evm := vm.NewEVMWithCustomPrecompiles(evmContext, dirtyState, opts.Config, vm.Config{NoBaseFee: true}, opts.CustomPrecompiles)
+	dirtyState.SetEVM(evm)
 	defer evm.Release()
 
 	// Monitor the outer context and interrupt the EVM upon cancellation. To avoid

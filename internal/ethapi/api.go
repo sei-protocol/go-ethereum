@@ -946,7 +946,7 @@ func DoEstimateGas(ctx context.Context, b Backend, args TransactionArgs, blockNr
 		Config:      b.ChainConfig(),
 		Chain:       NewChainContext(ctx, b),
 		Header:      header,
-		State:       state,
+		State:       vm.WrapStateDB(state),
 		BlobBaseFee: blobBaseFee,
 		ErrorRatio:  estimateGasErrorRatio,
 	}
