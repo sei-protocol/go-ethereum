@@ -34,12 +34,12 @@ import (
 // hookedStateDB represents a statedb which emits calls to tracing-hooks
 // on state operations.
 type hookedStateDB struct {
-	inner *StateDB
+	inner HookableStateDB
 	hooks *tracing.Hooks
 }
 
 // NewHookedState wraps the given stateDb with the given hooks
-func NewHookedState(stateDb *StateDB, hooks *tracing.Hooks) *hookedStateDB {
+func NewHookedState(stateDb HookableStateDB, hooks *tracing.Hooks) *hookedStateDB {
 	s := &hookedStateDB{stateDb, hooks}
 	if s.hooks == nil {
 		s.hooks = new(tracing.Hooks)
@@ -231,8 +231,10 @@ func (s *hookedStateDB) AddLog(log *types.Log) {
 }
 
 func (s *hookedStateDB) Finalise(rules params.Rules) *bal.ConstructionBlockAccessList {
-	if s.hooks.OnBalanceChange == nil && s.hooks.OnNonceChangeV2 == nil && s.hooks.OnNonceChange == nil && s.hooks.OnCodeChangeV2 == nil && s.hooks.OnCodeChange == nil {
-		// Short circuit if no relevant hooks are set.
+	inner, ok := s.inner.(*StateDB)
+	if !ok || s.hooks.OnBalanceChange == nil && s.hooks.OnNonceChangeV2 == nil && s.hooks.OnNonceChange == nil && s.hooks.OnCodeChangeV2 == nil && s.hooks.OnCodeChange == nil {
+		// Short circuit if no relevant hooks are set, or the journal of a
+		// non-native state is not accessible.
 		return s.inner.Finalise(rules)
 	}
 
@@ -240,8 +242,8 @@ func (s *hookedStateDB) Finalise(rules params.Rules) *bal.ConstructionBlockAcces
 	// that state change hooks will be invoked in deterministic
 	// order when the accounts are deleted below
 	var selfDestructedAddrs []common.Address
-	for addr := range s.inner.journal.mutations {
-		obj := s.inner.stateObjects[addr]
+	for addr := range inner.journal.mutations {
+		obj := inner.stateObjects[addr]
 		if obj == nil || !obj.selfDestructed {
 			// Not self-destructed, keep searching.
 			continue
@@ -258,7 +260,7 @@ func (s *hookedStateDB) Finalise(rules params.Rules) *bal.ConstructionBlockAcces
 	burnsBalance := !rules.IsAmsterdam
 
 	for _, addr := range selfDestructedAddrs {
-		obj := s.inner.stateObjects[addr]
+		obj := inner.stateObjects[addr]
 		// Bingo: state object was self-destructed, call relevant hooks.
 
 		if burnsBalance && s.hooks.OnBalanceChange != nil {

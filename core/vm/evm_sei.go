@@ -25,12 +25,16 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
 )
+
+// Keep the hooked-state surface in sync with vm.StateDB so any StateDB can be traced.
+var _ state.HookableStateDB = StateDB(nil)
 
 // CustomPrecompiledContract is a chain-specific precompile which, unlike the
 // upstream PrecompiledContract, receives the calling context and may access
