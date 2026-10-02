@@ -799,6 +799,7 @@ func (evm *EVM) GetVMContext() *tracing.VMContext {
 		Random:      evm.Context.Random,
 		BaseFee:     evm.Context.BaseFee,
 		StateDB:     evm.StateDB,
+		Precompiles: evm.GetPrecompiles(),
 	}
 }
 

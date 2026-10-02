@@ -225,6 +225,10 @@ func (t *callTracer) OnTxEnd(receipt *types.Receipt, err error) {
 	if err != nil {
 		return
 	}
+	// The callstack is empty if Stop is called before the first OnEnter.
+	if len(t.callstack) == 0 {
+		return
+	}
 	if receipt != nil {
 		t.callstack[0].GasUsed = receipt.GasUsed
 	}

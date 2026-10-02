@@ -66,6 +66,9 @@ type VMContext struct {
 	Random      *common.Hash
 	BaseFee     *big.Int
 	StateDB     StateDB
+	// Precompiles lists the addresses of all precompiles of the EVM, including
+	// chain-specific (custom) ones.
+	Precompiles []common.Address
 }
 
 // BlockEvent is emitted upon tracing an incoming block.

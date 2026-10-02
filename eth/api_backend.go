@@ -533,12 +533,21 @@ func (b *EthAPIBackend) CurrentHeader() *types.Header {
 	return b.eth.blockchain.CurrentHeader()
 }
 
-func (b *EthAPIBackend) StateAtBlock(ctx context.Context, block *types.Block, base *state.StateDB, readOnly bool, preferDisk bool) (*state.StateDB, tracers.StateReleaseFunc, error) {
-	return b.eth.stateAtBlock(ctx, block, base, readOnly, preferDisk)
+func (b *EthAPIBackend) StateAtBlock(ctx context.Context, block *types.Block, base vm.SeiStateDB, readOnly bool, preferDisk bool) (vm.SeiStateDB, tracers.StateReleaseFunc, error) {
+	var nativeBase *state.StateDB
+	if base != nil {
+		var ok bool
+		if nativeBase, ok = vm.NativeState(base); !ok {
+			return nil, nil, fmt.Errorf("unsupported base state %T", base)
+		}
+	}
+	statedb, release, err := b.eth.stateAtBlock(ctx, block, nativeBase, readOnly, preferDisk)
+	return vm.WrapStateDB(statedb), release, err
 }
 
-func (b *EthAPIBackend) StateAtTransaction(ctx context.Context, block *types.Block, txIndex int) (*types.Transaction, vm.BlockContext, *state.StateDB, tracers.StateReleaseFunc, error) {
-	return b.eth.stateAtTransaction(ctx, block, txIndex)
+func (b *EthAPIBackend) StateAtTransaction(ctx context.Context, block *types.Block, txIndex int) (*types.Transaction, vm.BlockContext, vm.SeiStateDB, tracers.StateReleaseFunc, error) {
+	tx, blockCtx, statedb, release, err := b.eth.stateAtTransaction(ctx, block, txIndex)
+	return tx, blockCtx, vm.WrapStateDB(statedb), release, err
 }
 
 func (b *EthAPIBackend) RPCTxSyncDefaultTimeout() time.Duration {
