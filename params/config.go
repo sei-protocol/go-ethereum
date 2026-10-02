@@ -393,6 +393,9 @@ var NetworkNames = map[string]string{
 type ChainConfig struct {
 	ChainID *big.Int `json:"chainId"` // chainId identifies the current chain and is used for replay protection
 
+	// Custom gas params for sei-chain
+	SeiSstoreSetGasEIP2200 *uint64 `json:"sstoreSetGasEIP2200,omitempty"` // Once per SSTORE operation from clean zero to non-zero
+
 	HomesteadBlock *big.Int `json:"homesteadBlock,omitempty"` // Homestead switch block (nil = no fork, 0 = already homestead)
 
 	DAOForkBlock   *big.Int `json:"daoForkBlock,omitempty"`   // TheDAO hard-fork switch block (nil = no fork)
@@ -575,6 +578,15 @@ func (c *ChainConfig) String() string {
 }
 
 // Description returns a human-readable description of ChainConfig.
+// SstoreSetGasEIP2200 returns the gas charged by an SSTORE from clean zero to
+// non-zero, honouring the Sei chain override when set.
+func (c *ChainConfig) SstoreSetGasEIP2200() uint64 {
+	if c.SeiSstoreSetGasEIP2200 != nil {
+		return *c.SeiSstoreSetGasEIP2200
+	}
+	return SstoreSetGasEIP2200
+}
+
 func (c *ChainConfig) Description() string {
 	var banner string
 
