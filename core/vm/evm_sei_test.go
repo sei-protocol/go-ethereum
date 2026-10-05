@@ -279,3 +279,54 @@ func createOpcodeAbortProgram(create2 bool) []byte {
 	prefix[3] = byte(len(prefix))
 	return append(prefix, initcode...)
 }
+
+// setCodeRecorder records SetCode calls made on the wrapped StateDB.
+type setCodeRecorder struct {
+	vm.StateDB
+	calls []setCodeCall
+}
+
+type setCodeCall struct {
+	addr common.Address
+	code []byte
+}
+
+func (r *setCodeRecorder) SetCode(addr common.Address, code []byte, reason tracing.CodeChangeReason) []byte {
+	r.calls = append(r.calls, setCodeCall{addr, code})
+	return r.StateDB.SetCode(addr, code, reason)
+}
+
+// TestCreateAlwaysSetsCode pins that a successful CREATE calls SetCode even for empty code.
+func TestCreateAlwaysSetsCode(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		initCode []byte
+		wantErr  error
+		wantCode []byte
+		wantCall bool
+	}{
+		{"empty code", []byte{byte(vm.STOP)}, nil, []byte{}, true},
+		{"non-empty code", []byte{0x60, 0xfe, 0x60, 0x00, 0x53, 0x60, 0x01, 0x60, 0x00, 0xf3}, nil, []byte{0xfe}, true}, // MSTORE8(0,0xfe) RETURN(0,1)
+		{"reverted", []byte{0x60, 0x00, 0x60, 0x00, 0xfd}, vm.ErrExecutionReverted, nil, false},                         // REVERT(0,0)
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			evm, statedb, caller := newSeiTestEVM(t, nil)
+			rec := &setCodeRecorder{StateDB: statedb}
+			evm.StateDB = rec
+
+			_, addr, _, err := evm.Create(caller, tt.initCode, vm.NewGasBudget(1_000_000, 0), new(uint256.Int))
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("want error %v, got %v", tt.wantErr, err)
+			}
+			if !tt.wantCall {
+				if len(rec.calls) != 0 {
+					t.Fatalf("want no SetCode, got %d calls", len(rec.calls))
+				}
+				return
+			}
+			if len(rec.calls) != 1 || rec.calls[0].addr != addr || !bytes.Equal(rec.calls[0].code, tt.wantCode) {
+				t.Fatalf("want one SetCode(%s, %x), got %+v", addr, tt.wantCode, rec.calls)
+			}
+		})
+	}
+}

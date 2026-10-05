@@ -713,9 +713,10 @@ func (evm *EVM) initNewContract(contract *Contract, address common.Address) ([]b
 			return ret, err
 		}
 	}
-	if len(ret) > 0 {
-		evm.StateDB.SetCode(address, ret, tracing.CodeChangeContractCreation)
-	}
+	// Sei: always set code, even when empty (reverts upstream #32916). Sei's StateDB
+	// stores code keys and the Sei address association on SetCode, so skipping it
+	// changes consensus state.
+	evm.StateDB.SetCode(address, ret, tracing.CodeChangeContractCreation)
 	return ret, nil
 }
 
