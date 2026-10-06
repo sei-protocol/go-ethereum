@@ -29,7 +29,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/accounts/abi"
-	"github.com/ethereum/go-ethereum/accounts/abi/abigen"
 	bind2 "github.com/ethereum/go-ethereum/accounts/abi/bind/v2"
 	"github.com/ethereum/go-ethereum/accounts/external"
 	"github.com/ethereum/go-ethereum/accounts/keystore"
@@ -38,12 +37,6 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 )
-
-// Bind generates a v1 contract binding.
-// Deprecated: binding generation has moved to github.com/ethereum/go-ethereum/accounts/abi/abigen
-func Bind(types []string, abis []string, bytecodes []string, fsigs []map[string]string, pkg string, libs map[string]string, aliases map[string]string) (string, error) {
-	return abigen.Bind(types, abis, bytecodes, fsigs, pkg, libs, aliases)
-}
 
 // auth.go
 

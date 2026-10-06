@@ -76,7 +76,7 @@ var (
 
 	// Files that end up in the geth-alltools*.zip archive (and the NSIS installer
 	// dev-tools section). Order matches the historical layout produced by ci.go.
-	allToolsBinaries = []string{"abigen", "evm", "geth", "rlpdump"}
+	allToolsBinaries = []string{"evm", "geth", "rlpdump"}
 
 	// Keeper build targets with their configurations
 	keeperTargets = []struct {
@@ -120,10 +120,6 @@ var (
 
 	// A distro package is created for all executables listed here.
 	distroExecutables = []distroExecutable{
-		{
-			BinaryName:  "abigen",
-			Description: "Source code generator to convert Ethereum contract definitions into easy to use, compile-time type-safe Go packages.",
-		},
 		{
 			BinaryName:  "evm",
 			Description: "Developer utility version of the EVM (Ethereum Virtual Machine) that is capable of running bytecode snippets within a configurable environment and execution mode.",
