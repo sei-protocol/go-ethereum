@@ -3,6 +3,9 @@ name: sei-chain EVM Smoke
 # Tier-1 downstream check: temporarily repoint sei-chain's go-ethereum replace
 # at this PR branch and run EVM-adjacent packages. See PLT-904.
 #
+# A PR is tested against the sei-chain branch of the same name when one exists,
+# so API-breaking fork changes can be smoke-tested with their sei-chain change.
+#
 # Informational only, not a required check. sei-chain@main moves independently
 # of this PR, so a failure here can reflect drift on the sei-chain side rather
 # than a real regression introduced by this PR — check sei-chain's own CI/main
@@ -41,11 +44,24 @@ jobs:
         with:
           path: go-ethereum
 
+      - name: Pick sei-chain ref
+        id: sei-chain-ref
+        # The sei-chain branch with this PR's branch name if it exists, else main.
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          ref=main
+          if [ -n "$HEAD_REF" ] && git ls-remote --exit-code --heads https://github.com/sei-protocol/sei-chain.git "refs/heads/$HEAD_REF" >/dev/null; then
+            ref="$HEAD_REF"
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "sei-chain ref: $ref"
+
       - name: Checkout sei-chain
         uses: actions/checkout@v4
         with:
           repository: sei-protocol/sei-chain
-          ref: main
+          ref: ${{ steps.sei-chain-ref.outputs.ref }}
           path: sei-chain
 
       - name: Set up Go
