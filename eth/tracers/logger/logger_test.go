@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
-	"sync"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -40,16 +39,20 @@ func (*dummyStatedb) SetState(_ common.Address, _ common.Hash, _ common.Hash) co
 	return common.Hash{}
 }
 
+func (*dummyStatedb) GetStateAndCommittedState(common.Address, common.Hash) (common.Hash, common.Hash) {
+	return common.Hash{}, common.Hash{}
+}
+
 func TestStoreCapture(t *testing.T) {
 	var (
 		logger   = NewStructLogger(nil)
-		evm      = vm.NewEVM(vm.BlockContext{}, &dummyStatedb{}, params.TestChainConfig, vm.Config{Tracer: logger.Hooks()}, nil)
-		contract = vm.NewContract(common.Address{}, common.Address{}, new(uint256.Int), 100000, nil)
+		evm      = vm.NewEVM(vm.BlockContext{}, &dummyStatedb{}, params.TestChainConfig, vm.Config{Tracer: logger.Hooks()})
+		contract = vm.NewContract(common.Address{}, common.Address{}, new(uint256.Int), vm.NewGasBudget(100000, 0), nil)
 	)
 	contract.Code = []byte{byte(vm.PUSH1), 0x1, byte(vm.PUSH1), 0x0, byte(vm.SSTORE)}
 	var index common.Hash
 	logger.OnTxStart(evm.GetVMContext(), nil, common.Address{})
-	_, err := evm.Interpreter().Run(vm.CALL, contract, []byte{}, false)
+	_, err := evm.Run(contract, []byte{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,37 +64,6 @@ func TestStoreCapture(t *testing.T) {
 	if logger.storage[contract.Address()][index] != exp {
 		t.Errorf("expected %x, got %x", exp, logger.storage[contract.Address()][index])
 	}
-}
-
-func TestStructLoggerStopReason(t *testing.T) {
-	logger := NewStructLogger(nil)
-	stopErr := errors.New("stop error")
-	stopped := make(chan struct{})
-	go func() {
-		logger.Stop(stopErr)
-		close(stopped)
-	}()
-	<-stopped
-
-	_, resultErr := logger.GetResult()
-	if !errors.Is(resultErr, stopErr) {
-		t.Fatalf("unexpected result error: have %v, want %v", resultErr, stopErr)
-	}
-}
-
-func TestStructLoggerStopRace(t *testing.T) {
-	logger := NewStructLogger(nil)
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		logger.Stop(errors.New("stop error"))
-	}()
-	go func() {
-		defer wg.Done()
-		_, _ = logger.GetResult()
-	}()
-	wg.Wait()
 }
 
 // Tests that blank fields don't appear in logs when JSON marshalled, to reduce
@@ -120,6 +92,49 @@ func TestStructLogMarshalingOmitEmpty(t *testing.T) {
 			}
 			if have, want := string(blob), tt.want; have != want {
 				t.Fatalf("mismatched results\n\thave: %v\n\twant: %v", have, want)
+			}
+		})
+	}
+}
+
+func TestStructLogLegacyJSONSpecFormatting(t *testing.T) {
+	tests := []struct {
+		name string
+		log  *StructLog
+		want string
+	}{
+		{
+			name: "omits empty error and pads memory/storage",
+			log: &StructLog{
+				Pc:         7,
+				Op:         vm.SSTORE,
+				Gas:        100,
+				GasCost:    20,
+				Memory:     []byte{0xaa, 0xbb},
+				Storage:    map[common.Hash]common.Hash{common.BigToHash(big.NewInt(1)): common.BigToHash(big.NewInt(2))},
+				Depth:      1,
+				ReturnData: []byte{0x12, 0x34},
+			},
+			want: `{"pc":7,"op":"SSTORE","gas":100,"gasCost":20,"depth":1,"returnData":"0x1234","memory":["0xaabb000000000000000000000000000000000000000000000000000000000000"],"storage":{"0x0000000000000000000000000000000000000000000000000000000000000001":"0x0000000000000000000000000000000000000000000000000000000000000002"}}`,
+		},
+		{
+			name: "includes error only when present",
+			log: &StructLog{
+				Pc:      1,
+				Op:      vm.STOP,
+				Gas:     2,
+				GasCost: 3,
+				Depth:   1,
+				Err:     errors.New("boom"),
+			},
+			want: `{"pc":1,"op":"STOP","gas":2,"gasCost":3,"depth":1,"error":"boom"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			have := string(tt.log.toLegacyJSON())
+			if have != tt.want {
+				t.Fatalf("mismatched results\n\thave: %v\n\twant: %v", have, tt.want)
 			}
 		})
 	}

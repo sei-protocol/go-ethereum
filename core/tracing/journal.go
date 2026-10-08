@@ -17,7 +17,7 @@
 package tracing
 
 import (
-	"fmt"
+	"errors"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -39,25 +39,47 @@ type entry interface {
 // WrapWithJournal wraps the given tracer with a journaling layer.
 func WrapWithJournal(hooks *Hooks) (*Hooks, error) {
 	if hooks == nil {
-		return nil, fmt.Errorf("wrapping nil tracer")
+		return nil, errors.New("wrapping nil tracer")
 	}
 	// No state change to journal, return the wrapped hooks as is
-	if hooks.OnBalanceChange == nil && hooks.OnNonceChange == nil && hooks.OnNonceChangeV2 == nil && hooks.OnCodeChange == nil && hooks.OnStorageChange == nil {
+	if hooks.OnBalanceChange == nil && hooks.OnNonceChange == nil && hooks.OnNonceChangeV2 == nil && hooks.OnCodeChange == nil && hooks.OnCodeChangeV2 == nil && hooks.OnStorageChange == nil {
 		return hooks, nil
 	}
 	if hooks.OnNonceChange != nil && hooks.OnNonceChangeV2 != nil {
-		return nil, fmt.Errorf("cannot have both OnNonceChange and OnNonceChangeV2")
+		return nil, errors.New("cannot have both OnNonceChange and OnNonceChangeV2")
+	}
+	if hooks.OnCodeChange != nil && hooks.OnCodeChangeV2 != nil {
+		return nil, errors.New("cannot have both OnCodeChange and OnCodeChangeV2")
 	}
 
 	// Create a new Hooks instance and copy all hooks
 	wrapped := *hooks
 
 	// Create journal
-	j := &journal{hooks: hooks}
+	j := &journal{
+		hooks: hooks,
+	}
 	// Scope hooks need to be re-implemented.
 	wrapped.OnTxEnd = j.OnTxEnd
-	wrapped.OnEnter = j.OnEnter
-	wrapped.OnExit = j.OnExit
+
+	noEnterHook := hooks.OnEnter == nil && hooks.OnEnterV2 == nil
+	wrapped.OnEnter, wrapped.OnEnterV2 = nil, nil
+	if hooks.OnEnter != nil || noEnterHook {
+		wrapped.OnEnter = j.OnEnter
+	}
+	if hooks.OnEnterV2 != nil || noEnterHook {
+		wrapped.OnEnterV2 = j.OnEnterV2
+	}
+
+	noExitHook := hooks.OnExit == nil && hooks.OnExitV2 == nil
+	wrapped.OnExit, wrapped.OnExitV2 = nil, nil
+	if hooks.OnExit != nil || noExitHook {
+		wrapped.OnExit = j.OnExit
+	}
+	if hooks.OnExitV2 != nil || noExitHook {
+		wrapped.OnExitV2 = j.OnExitV2
+	}
+
 	// Wrap state change hooks.
 	if hooks.OnBalanceChange != nil {
 		wrapped.OnBalanceChange = j.OnBalanceChange
@@ -66,11 +88,15 @@ func WrapWithJournal(hooks *Hooks) (*Hooks, error) {
 		// Regardless of which hook version is used in the tracer,
 		// the journal will want to capture the nonce change reason.
 		wrapped.OnNonceChangeV2 = j.OnNonceChangeV2
+
 		// A precaution to ensure EVM doesn't call both hooks.
 		wrapped.OnNonceChange = nil
 	}
 	if hooks.OnCodeChange != nil {
 		wrapped.OnCodeChange = j.OnCodeChange
+	}
+	if hooks.OnCodeChangeV2 != nil {
+		wrapped.OnCodeChangeV2 = j.OnCodeChangeV2
 	}
 	if hooks.OnStorageChange != nil {
 		wrapped.OnStorageChange = j.OnStorageChange
@@ -119,7 +145,8 @@ func (j *journal) OnTxEnd(receipt *types.Receipt, err error) {
 	}
 }
 
-// OnEnter is invoked for each EVM call frame and records a journal revision.
+// OnEnter records a journal revision for a frame reported through the
+// single-dimensional hook.
 func (j *journal) OnEnter(depth int, typ byte, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
 	j.snapshot()
 	if j.hooks.OnEnter != nil {
@@ -127,17 +154,38 @@ func (j *journal) OnEnter(depth int, typ byte, from common.Address, to common.Ad
 	}
 }
 
-// OnExit is invoked when an EVM call frame ends.
+// OnExit forwards a frame exit reported through the single-dimensional hook.
+func (j *journal) OnExit(depth int, output []byte, gasUsed uint64, err error, reverted bool) {
+	j.exit(reverted)
+	if j.hooks.OnExit != nil {
+		j.hooks.OnExit(depth, output, gasUsed, err, reverted)
+	}
+}
+
+// OnEnterV2 is invoked for each EVM call frame and records a journal revision.
+func (j *journal) OnEnterV2(depth int, typ byte, from common.Address, to common.Address, input []byte, gas Gas, value *big.Int) {
+	j.snapshot()
+	if j.hooks.OnEnterV2 != nil {
+		j.hooks.OnEnterV2(depth, typ, from, to, input, gas, value)
+	}
+}
+
+// OnExitV2 is invoked when an EVM call frame ends.
 // If the call has reverted, all state changes made by that frame are undone.
 // If the call did not revert, we forget about changes in that revision.
-func (j *journal) OnExit(depth int, output []byte, gasUsed uint64, err error, reverted bool) {
+func (j *journal) OnExitV2(depth int, output []byte, gasLeft Gas, err error, reverted bool) {
+	j.exit(reverted)
+	if j.hooks.OnExitV2 != nil {
+		j.hooks.OnExitV2(depth, output, gasLeft, err, reverted)
+	}
+}
+
+// exit unwinds the revision recorded by the matching enter.
+func (j *journal) exit(reverted bool) {
 	if reverted {
 		j.revert(j.hooks)
 	} else {
 		j.popRevision()
-	}
-	if j.hooks.OnExit != nil {
-		j.hooks.OnExit(depth, output, gasUsed, err, reverted)
 	}
 }
 
@@ -149,10 +197,18 @@ func (j *journal) OnBalanceChange(addr common.Address, prev, new *big.Int, reaso
 }
 
 func (j *journal) OnNonceChangeV2(addr common.Address, prev, new uint64, reason NonceChangeReason) {
-	// When a contract is created, the nonce of the creator is incremented.
-	// This change is not reverted when the creation fails.
-	if reason != NonceChangeContractCreator {
-		j.entries = append(j.entries, nonceChange{addr: addr, prev: prev, new: new})
+	j.entries = append(j.entries, nonceChange{addr: addr, prev: prev, new: new})
+	if reason == NonceChangeContractCreator {
+		// When a contract is created via CREATE/CREATE2, the creator's nonce is
+		// incremented. The EVM does not revert this when the CREATE frame itself
+		// fails (the nonce change happens before the EVM snapshot). However, if
+		// a parent frame reverts, the nonce must be reverted along with everything
+		// else.
+		//
+		// To achieve this, advance the current frame's revision point past this
+		// entry. The CREATE frame's revert won't touch it (it's below the revision),
+		// but a parent frame's revert will (it's above the parent's revision).
+		j.revisions[len(j.revisions)-1] = len(j.entries)
 	}
 	if j.hooks.OnNonceChangeV2 != nil {
 		j.hooks.OnNonceChangeV2(addr, prev, new, reason)
@@ -171,6 +227,19 @@ func (j *journal) OnCodeChange(addr common.Address, prevCodeHash common.Hash, pr
 	})
 	if j.hooks.OnCodeChange != nil {
 		j.hooks.OnCodeChange(addr, prevCodeHash, prevCode, codeHash, code)
+	}
+}
+
+func (j *journal) OnCodeChangeV2(addr common.Address, prevCodeHash common.Hash, prevCode []byte, codeHash common.Hash, code []byte, reason CodeChangeReason) {
+	j.entries = append(j.entries, codeChange{
+		addr:         addr,
+		prevCodeHash: prevCodeHash,
+		prevCode:     prevCode,
+		newCodeHash:  codeHash,
+		newCode:      code,
+	})
+	if j.hooks.OnCodeChangeV2 != nil {
+		j.hooks.OnCodeChangeV2(addr, prevCodeHash, prevCode, codeHash, code, reason)
 	}
 }
 
@@ -225,7 +294,9 @@ func (n nonceChange) revert(hooks *Hooks) {
 }
 
 func (c codeChange) revert(hooks *Hooks) {
-	if hooks.OnCodeChange != nil {
+	if hooks.OnCodeChangeV2 != nil {
+		hooks.OnCodeChangeV2(c.addr, c.newCodeHash, c.newCode, c.prevCodeHash, c.prevCode, CodeChangeRevert)
+	} else if hooks.OnCodeChange != nil {
 		hooks.OnCodeChange(c.addr, c.newCodeHash, c.newCode, c.prevCodeHash, c.prevCode)
 	}
 }

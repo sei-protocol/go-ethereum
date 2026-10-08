@@ -31,9 +31,9 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/filtermaps"
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/eth/tracers/tracersutils"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/params"
@@ -264,6 +264,91 @@ func TestSetFeeDefaults(t *testing.T) {
 	}
 }
 
+// TestCallDefaults tests that CallDefaults rejects transaction types that
+// cannot be represented without a recipient, instead of letting ToTransaction
+// dereference the nil "to" field later on.
+func TestCallDefaults(t *testing.T) {
+	t.Parallel()
+
+	var (
+		addr    = common.Address{0x42}
+		baseFee = big.NewInt(params.InitialBaseFee)
+		chainID = big.NewInt(1)
+	)
+	tests := []struct {
+		name string
+		args TransactionArgs
+		err  error
+	}{
+		{
+			name: "authorization list without to",
+			args: TransactionArgs{AuthorizationList: []types.SetCodeAuthorization{{Address: addr}}},
+			err:  core.ErrSetCodeTxCreate,
+		},
+		{
+			name: "empty authorization list without to",
+			args: TransactionArgs{AuthorizationList: []types.SetCodeAuthorization{}},
+			err:  core.ErrSetCodeTxCreate,
+		},
+		{
+			name: "blob hashes without to",
+			args: TransactionArgs{BlobHashes: []common.Hash{{0x01}}},
+			err:  core.ErrBlobTxCreate,
+		},
+		{
+			name: "plain contract creation",
+			args: TransactionArgs{},
+		},
+		{
+			name: "authorization list with to",
+			args: TransactionArgs{To: &addr, AuthorizationList: []types.SetCodeAuthorization{{Address: addr}}},
+		},
+		{
+			name: "blob hashes with to",
+			args: TransactionArgs{To: &addr, BlobHashes: []common.Hash{{0x01}}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.args.CallDefaults(0, baseFee, chainID)
+			if tt.err == nil {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				// Sanitized args must be representable as a transaction, as
+				// eth_simulateV1 and debug_traceCall convert them after this.
+				tt.args.ToTransaction(types.DynamicFeeTxType)
+			} else if !errors.Is(err, tt.err) {
+				t.Fatalf("error mismatch, want %q, have %v", tt.err, err)
+			}
+		})
+	}
+}
+
+// TestSetDefaultsEmptyAuthList tests that setDefaults rejects an authorization
+// list on a contract creation even when the list is empty, as ToTransaction
+// cannot represent it.
+func TestSetDefaultsEmptyAuthList(t *testing.T) {
+	t.Parallel()
+
+	var (
+		b    = newBackendMock()
+		gas  = hexutil.Uint64(100000)
+		data = hexutil.Bytes{0x01}
+	)
+	args := &TransactionArgs{
+		MaxFeePerGas:         (*hexutil.Big)(big.NewInt(42)),
+		MaxPriorityFeePerGas: (*hexutil.Big)(big.NewInt(42)),
+		Gas:                  &gas,
+		Data:                 &data,
+		AuthorizationList:    []types.SetCodeAuthorization{},
+	}
+	want := `authorizationList provided for contract creation, but "to" field is missing`
+	if err := args.setDefaults(context.Background(), b, sidecarConfig{}); err == nil || err.Error() != want {
+		t.Fatalf("error mismatch, want %q, have %v", want, err)
+	}
+}
+
 type backendMock struct {
 	current *types.Header
 	config  *params.ChainConfig
@@ -326,12 +411,15 @@ func (b *backendMock) SuggestGasTipCap(ctx context.Context) (*big.Int, error) {
 	return big.NewInt(42), nil
 }
 func (b *backendMock) BlobBaseFee(ctx context.Context) *big.Int { return big.NewInt(42) }
+func (b *backendMock) BaseFee(ctx context.Context) *big.Int     { return big.NewInt(42) }
 
 func (b *backendMock) CurrentHeader() *types.Header     { return b.current }
 func (b *backendMock) ChainConfig() *params.ChainConfig { return b.config }
 
 // Other methods needed to implement Backend interface.
-func (b *backendMock) SyncProgress() ethereum.SyncProgress { return ethereum.SyncProgress{} }
+func (b *backendMock) SyncProgress(ctx context.Context) ethereum.SyncProgress {
+	return ethereum.SyncProgress{}
+}
 func (b *backendMock) FeeHistory(ctx context.Context, blockCount uint64, lastBlock rpc.BlockNumber, rewardPercentiles []float64) (*big.Int, [][]*big.Int, []*big.Int, []float64, []*big.Int, []float64, error) {
 	return nil, nil, nil, nil, nil, nil, nil
 }
@@ -342,7 +430,7 @@ func (b *backendMock) RPCGasCap() uint64                 { return 0 }
 func (b *backendMock) RPCEVMTimeout() time.Duration      { return time.Second }
 func (b *backendMock) RPCTxFeeCap() float64              { return 0 }
 func (b *backendMock) UnprotectedAllowed() bool          { return false }
-func (b *backendMock) SetHead(number uint64)             {}
+func (b *backendMock) SetHead(number uint64) error       { return nil }
 func (b *backendMock) HeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*types.Header, error) {
 	return nil, nil
 }
@@ -353,11 +441,11 @@ func (b *backendMock) HeaderByNumberOrHash(ctx context.Context, blockNrOrHash rp
 	return nil, nil
 }
 func (b *backendMock) CurrentBlock() *types.Header { return nil }
-func (b *backendMock) BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*types.Block, []tracersutils.TraceBlockMetadata, error) {
-	return nil, nil, nil
+func (b *backendMock) BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*types.Block, error) {
+	return nil, nil
 }
-func (b *backendMock) BlockByHash(ctx context.Context, hash common.Hash) (*types.Block, []tracersutils.TraceBlockMetadata, error) {
-	return nil, nil, nil
+func (b *backendMock) BlockByHash(ctx context.Context, hash common.Hash) (*types.Block, error) {
+	return nil, nil
 }
 func (b *backendMock) BlockByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*types.Block, error) {
 	return nil, nil
@@ -365,14 +453,17 @@ func (b *backendMock) BlockByNumberOrHash(ctx context.Context, blockNrOrHash rpc
 func (b *backendMock) GetBody(ctx context.Context, hash common.Hash, number rpc.BlockNumber) (*types.Body, error) {
 	return nil, nil
 }
-func (b *backendMock) StateAndHeaderByNumber(ctx context.Context, number rpc.BlockNumber) (vm.StateDB, *types.Header, error) {
+func (b *backendMock) StateAndHeaderByNumber(ctx context.Context, number rpc.BlockNumber) (vm.SeiStateDB, *types.Header, error) {
 	return nil, nil, nil
 }
-func (b *backendMock) StateAndHeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (vm.StateDB, *types.Header, error) {
+func (b *backendMock) StateAndHeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (vm.SeiStateDB, *types.Header, error) {
 	return nil, nil, nil
 }
-func (b *backendMock) Pending() (*types.Block, types.Receipts, vm.StateDB) { return nil, nil, nil }
+func (b *backendMock) Pending() (*types.Block, types.Receipts, *state.StateDB) { return nil, nil, nil }
 func (b *backendMock) GetReceipts(ctx context.Context, hash common.Hash) (types.Receipts, error) {
+	return nil, nil
+}
+func (b *backendMock) GetCanonicalReceipt(tx *types.Transaction, blockHash common.Hash, blockNumber, blockIndex uint64) (*types.Receipt, error) {
 	return nil, nil
 }
 func (b *backendMock) GetLogs(ctx context.Context, blockHash common.Hash, number uint64) ([][]*types.Log, error) {
@@ -386,9 +477,10 @@ func (b *backendMock) SubscribeChainHeadEvent(ch chan<- core.ChainHeadEvent) eve
 	return nil
 }
 func (b *backendMock) SendTx(ctx context.Context, signedTx *types.Transaction) error { return nil }
-func (b *backendMock) GetTransaction(ctx context.Context, txHash common.Hash) (bool, *types.Transaction, common.Hash, uint64, uint64, error) {
-	return false, nil, [32]byte{}, 0, 0, nil
+func (b *backendMock) GetCanonicalTransaction(txHash common.Hash) (bool, *types.Transaction, common.Hash, uint64, uint64) {
+	return false, nil, [32]byte{}, 0, 0
 }
+func (b *backendMock) TxIndexDone() bool                                        { return true }
 func (b *backendMock) GetPoolTransactions() (types.Transactions, error)         { return nil, nil }
 func (b *backendMock) GetPoolTransaction(txHash common.Hash) *types.Transaction { return nil }
 func (b *backendMock) GetPoolNonce(ctx context.Context, addr common.Address) (uint64, error) {
@@ -409,8 +501,11 @@ func (b *backendMock) SubscribeRemovedLogsEvent(ch chan<- core.RemovedLogsEvent)
 
 func (b *backendMock) Engine() consensus.Engine { return nil }
 
+func (b *backendMock) CurrentView() *filtermaps.ChainView           { return nil }
 func (b *backendMock) NewMatcherBackend() filtermaps.MatcherBackend { return nil }
-
-func (b *backendMock) GetCustomPrecompiles(int64) map[common.Address]vm.PrecompiledContract {
+func (b *backendMock) GetCustomPrecompiles(int64) map[common.Address]vm.CustomPrecompiledContract {
 	return nil
 }
+
+func (b *backendMock) HistoryPruningCutoff() uint64       { return 0 }
+func (b *backendMock) HistoryRetention() HistoryRetention { return HistoryRetention{} }
