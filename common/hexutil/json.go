@@ -28,11 +28,11 @@ import (
 )
 
 var (
-	bytesT  = reflect.TypeOf(Bytes(nil))
-	bigT    = reflect.TypeOf((*Big)(nil))
-	uintT   = reflect.TypeOf(Uint(0))
-	uint64T = reflect.TypeOf(Uint64(0))
-	u256T   = reflect.TypeOf((*uint256.Int)(nil))
+	bytesT  = reflect.TypeFor[Bytes]()
+	bigT    = reflect.TypeFor[*Big]()
+	uintT   = reflect.TypeFor[Uint]()
+	uint64T = reflect.TypeFor[Uint64]()
+	u256T   = reflect.TypeFor[*uint256.Int]()
 )
 
 // Bytes marshals/unmarshals as a JSON string with 0x prefix.
@@ -204,6 +204,10 @@ func (b *Big) ToInt() *big.Int {
 	return (*big.Int)(b)
 }
 
+func (b *Big) ToUint256() (*uint256.Int, bool) {
+	return uint256.FromBig((*big.Int)(b))
+}
+
 // String returns the hex encoding of b.
 func (b *Big) String() string {
 	return EncodeBig(b.ToInt())
@@ -245,28 +249,31 @@ func (b *U256) UnmarshalJSON(input []byte) error {
 	if !isString(input) {
 		return errNonString(u256T)
 	}
-	if string(input) == `"0x0"` {
-		_ = (*uint256.Int)(b).SetBytes([]byte{})
-		return nil
-	}
-	// strip leading zeros
-	for firstNonZeroIdx := 3; firstNonZeroIdx < len(input); firstNonZeroIdx++ {
-		if input[firstNonZeroIdx] != '0' {
-			input = append(input[:3], input[firstNonZeroIdx:]...)
-			break
-		}
-	}
 	// The hex decoder needs to accept empty string ("") as '0', which uint256.Int
 	// would reject.
 	if len(input) == 2 {
 		(*uint256.Int)(b).Clear()
 		return nil
 	}
-	err := (*uint256.Int)(b).SetFromHex(string(input[1 : len(input)-1]))
+	err := (*uint256.Int)(b).SetFromHex(trimHexLeadingZeros(string(input[1 : len(input)-1])))
 	if err != nil {
 		return &json.UnmarshalTypeError{Value: err.Error(), Type: u256T}
 	}
 	return nil
+}
+
+// trimHexLeadingZeros drops leading zero digits from a 0x-prefixed quantity,
+// keeping at least one digit, so that clients sending e.g. "0x01" are accepted
+// (Sei).
+func trimHexLeadingZeros(s string) string {
+	if len(s) < 4 || (s[:2] != "0x" && s[:2] != "0X") || s[2] != '0' {
+		return s
+	}
+	i := 2
+	for i < len(s)-1 && s[i] == '0' {
+		i++
+	}
+	return s[:2] + s[i:]
 }
 
 // UnmarshalText implements encoding.TextUnmarshaler

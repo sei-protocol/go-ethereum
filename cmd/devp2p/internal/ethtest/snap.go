@@ -30,6 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth/protocols/snap"
 	"github.com/ethereum/go-ethereum/internal/utesting"
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 )
@@ -80,25 +81,25 @@ func (s *Suite) TestSnapGetAccountRange(t *utesting.T) {
 	)
 
 	tests := []accRangeTest{
-		// Tests decreasing the number of bytes
+		// Tests the full range and decreasing response byte limits.
 		{
 			nBytes:       4000,
 			root:         root,
 			startingHash: zero,
 			limitHash:    ffHash,
-			expAccounts:  86,
+			expAccounts:  48,
 			expFirst:     firstKey,
-			expLast:      common.HexToHash("0x445cb5c1278fdce2f9cbdb681bdd76c52f8e50e41dbd9e220242a69ba99ac099"),
-			desc:         "In this test, we request the entire state range, but limit the response to 4000 bytes.",
+			expLast:      common.HexToHash("0xec3e92967d10ac66eff64a5697258b8acf87e661962b2938a0edcd78788f360d"),
+			desc:         "In this test, we request the entire state range with a response limit large enough to return it all.",
 		},
 		{
 			nBytes:       3000,
 			root:         root,
 			startingHash: zero,
 			limitHash:    ffHash,
-			expAccounts:  65,
+			expAccounts:  46,
 			expFirst:     firstKey,
-			expLast:      common.HexToHash("0x2e6fe1362b3e388184fd7bf08e99e74170b26361624ffd1c5f646da7067b58b6"),
+			expLast:      common.HexToHash("0xe3b0b0cbc04ac35bd85edc0e674ce3caa7aeeeb6a0d0c93326947cfcd53d5610"),
 			desc:         "In this test, we request the entire state range, but limit the response to 3000 bytes.",
 		},
 		{
@@ -106,9 +107,9 @@ func (s *Suite) TestSnapGetAccountRange(t *utesting.T) {
 			root:         root,
 			startingHash: zero,
 			limitHash:    ffHash,
-			expAccounts:  44,
+			expAccounts:  32,
 			expFirst:     firstKey,
-			expLast:      common.HexToHash("0x1c3f74249a4892081ba0634a819aec9ed25f34c7653f5719b9098487e65ab595"),
+			expLast:      common.HexToHash("0xa9233a729f0468c9c309c48b82934c99ba1fd18447947b3bc0621adb7a5fc643"),
 			desc:         "In this test, we request the entire state range, but limit the response to 2000 bytes.",
 		},
 		{
@@ -177,9 +178,9 @@ The server should return the first available account.`,
 			root:         root,
 			startingHash: firstKey,
 			limitHash:    ffHash,
-			expAccounts:  86,
+			expAccounts:  48,
 			expFirst:     firstKey,
-			expLast:      common.HexToHash("0x445cb5c1278fdce2f9cbdb681bdd76c52f8e50e41dbd9e220242a69ba99ac099"),
+			expLast:      common.HexToHash("0xec3e92967d10ac66eff64a5697258b8acf87e661962b2938a0edcd78788f360d"),
 			desc: `In this test, startingHash is exactly the first available account key.
 The server should return the first available account of the state as the first item.`,
 		},
@@ -188,9 +189,9 @@ The server should return the first available account of the state as the first i
 			root:         root,
 			startingHash: hashAdd(firstKey, 1),
 			limitHash:    ffHash,
-			expAccounts:  86,
+			expAccounts:  47,
 			expFirst:     secondKey,
-			expLast:      common.HexToHash("0x4615e5f5df5b25349a00ad313c6cd0436b6c08ee5826e33a018661997f85ebaa"),
+			expLast:      common.HexToHash("0xec3e92967d10ac66eff64a5697258b8acf87e661962b2938a0edcd78788f360d"),
 			desc: `In this test, startingHash is after the first available key.
 The server should return the second account of the state as the first item.`,
 		},
@@ -226,9 +227,9 @@ server to return no data because genesis is older than 127 blocks.`,
 			root:         s.chain.RootAt(int(s.chain.Head().Number().Uint64()) - 127),
 			startingHash: zero,
 			limitHash:    ffHash,
-			expAccounts:  84,
+			expAccounts:  48,
 			expFirst:     firstKey,
-			expLast:      common.HexToHash("0x580aa878e2f92d113a12c0a3ce3c21972b03dbe80786858d49a72097e2c491a3"),
+			expLast:      common.HexToHash("0xec3e92967d10ac66eff64a5697258b8acf87e661962b2938a0edcd78788f360d"),
 			desc: `This test requests data at a state root that is 127 blocks old.
 We expect the server to have this state available.`,
 		},
@@ -517,7 +518,7 @@ func (s *Suite) TestSnapGetByteCodes(t *utesting.T) {
 		// Request the same hash multiple times.
 		{
 			desc:      `This test requests the same code hash multiple times. The server should deliver it multiple times.`,
-			nBytes:    1000,
+			nBytes:    10000,
 			hashes:    []common.Hash{allHashes[0], allHashes[0], allHashes[0], allHashes[0]},
 			expHashes: 4,
 		},
@@ -594,8 +595,8 @@ func (s *Suite) TestSnapTrieNodes(t *utesting.T) {
 		// This is the known address of the snap storage testing contract.
 		storageAcct     = common.HexToAddress("0x8bebc8ba651aee624937e7d897853ac30c95a067")
 		storageAcctHash = common.BytesToHash(s.chain.state[storageAcct].AddressHash)
-		// This is the known address of an existing account.
-		key      = common.FromHex("0xa87387b50b481431c6ccdb9ae99a54d4dcdd4a3eff75d7b17b4818f7bbfc21e9")
+		// Use the first account in hash order as a known state-trie path.
+		key      = s.chain.AccountsInHashOrder()[0].AddressHash
 		empty    = types.EmptyCodeHash
 		accPaths []snap.TrieNodePathSet
 	)
@@ -657,8 +658,8 @@ The server should reject the request.`,
 				// It's a bit unfortunate these are hard-coded, but the result depends on
 				// a lot of aspects of the state trie and can't be guessed in a simple
 				// way. So you'll have to update this when the test chain is changed.
-				common.HexToHash("0x3e963a69401a70224cbfb8c0cc2249b019041a538675d71ccf80c9328d114e2e"),
-				common.HexToHash("0xd0670d09cdfbf3c6320eb3e92c47c57baa6c226551a2d488c05581091e6b1689"),
+				common.HexToHash("0x77aab88291160758db7601d30f1527f8c757c038942d68653c66c5e085c718c3"),
+				common.HexToHash("0xb7c16b351c07133620589b3d997c54803b30f7e3da75bfddae6f8ef59c15132a"),
 				empty, empty, empty, empty, empty, empty, empty, empty, empty, empty, empty, empty,
 				empty, empty, empty, empty, empty, empty, empty, empty, empty, empty, empty, empty,
 				empty, empty, empty, empty, empty, empty, empty, empty, empty, empty, empty, empty,
@@ -678,8 +679,8 @@ The server should reject the request.`,
 			// be updated when the test chain is changed.
 			expHashes: []common.Hash{
 				empty,
-				common.HexToHash("0xd0670d09cdfbf3c6320eb3e92c47c57baa6c226551a2d488c05581091e6b1689"),
-				common.HexToHash("0x3e963a69401a70224cbfb8c0cc2249b019041a538675d71ccf80c9328d114e2e"),
+				common.HexToHash("0xb7c16b351c07133620589b3d997c54803b30f7e3da75bfddae6f8ef59c15132a"),
+				common.HexToHash("0x77aab88291160758db7601d30f1527f8c757c038942d68653c66c5e085c718c3"),
 			},
 		},
 
@@ -806,9 +807,11 @@ func (s *Suite) snapGetAccountRange(t *utesting.T, tc *accRangeTest) error {
 	for i, node := range proof {
 		nodes[i] = node
 	}
-	proofdb := nodes.Set()
-
-	_, err = trie.VerifyRangeProof(tc.root, tc.startingHash[:], keys, accounts, proofdb)
+	if len(nodes) == 0 && tc.startingHash == (common.Hash{}) {
+		_, err = trie.VerifyRangeProof(tc.root, nil, keys, accounts, nil)
+		return err
+	}
+	_, err = trie.VerifyRangeProof(tc.root, tc.startingHash[:], keys, accounts, nodes.Set())
 	return err
 }
 
@@ -937,10 +940,14 @@ func (s *Suite) snapGetTrieNodes(t *utesting.T, tc *trieNodesTest) error {
 	}
 
 	// write0 request
+	paths, err := rlp.EncodeToRawList(tc.paths)
+	if err != nil {
+		panic(err)
+	}
 	req := &snap.GetTrieNodesPacket{
 		ID:    uint64(rand.Int63()),
 		Root:  tc.root,
-		Paths: tc.paths,
+		Paths: paths,
 		Bytes: tc.nBytes,
 	}
 	msg, err := conn.snapRequest(snap.GetTrieNodesMsg, req)

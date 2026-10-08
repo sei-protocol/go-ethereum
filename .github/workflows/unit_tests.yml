@@ -21,7 +21,7 @@ permissions:
 
 env:
   # Matches build/checksums.txt's pinned Go toolchain (separate from the smoke workflow's version)
-  GO_VERSION: '1.24.1'
+  GO_VERSION: '1.27.1'
 
 jobs:
   unit_tests:
@@ -44,19 +44,3 @@ jobs:
         with:
           name: coverage
           path: coverage.out
-
-  tracer_race_tests:
-    name: Tracer race tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      - name: Run tracer race tests
-        run: go test -race ./eth/tracers/...

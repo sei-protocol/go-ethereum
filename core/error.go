@@ -29,7 +29,9 @@ var (
 	// ErrNoGenesis is returned when there is no Genesis Block.
 	ErrNoGenesis = errors.New("genesis not found in chain")
 
-	errSideChainReceipts = errors.New("side blocks can't be accepted as ancient chain data")
+	// ErrBlockOversized is returned if the size of the RLP-encoded block
+	// exceeds the cap established by EIP 7934
+	ErrBlockOversized = errors.New("block RLP-encoded size exceeds maximum")
 )
 
 // List of evm-call-message pre-checking errors. All state transition messages will
@@ -56,18 +58,13 @@ var (
 	// by a transaction is higher than what's left in the block.
 	ErrGasLimitReached = errors.New("gas limit reached")
 
+	// ErrGasLimitOverflow is returned by the gas pool if the remaining gas
+	// exceeds the maximum value of uint64.
+	ErrGasLimitOverflow = errors.New("gas limit overflow")
+
 	// ErrInsufficientFundsForTransfer is returned if the transaction sender doesn't
 	// have enough funds for transfer(topmost call only).
 	ErrInsufficientFundsForTransfer = errors.New("insufficient funds for transfer")
-
-	// ErrMaxInitCodeSizeExceeded is returned if creation transaction provides the init code bigger
-	// than init code size limit.
-	ErrMaxInitCodeSizeExceeded = errors.New("max initcode size exceeded")
-
-	// ErrInsufficientBalanceWitness is returned if the transaction sender has enough
-	// funds to cover the transfer, but not enough to pay for witness access/modification
-	// costs for the transaction
-	ErrInsufficientBalanceWitness = errors.New("insufficient funds to cover witness access costs for transaction")
 
 	// ErrInsufficientFunds is returned if the total cost of executing a transaction
 	// is higher than the balance of the user's account.
@@ -116,6 +113,9 @@ var (
 	// ErrMissingBlobHashes is returned if a blob transaction has no blob hashes.
 	ErrMissingBlobHashes = errors.New("blob transaction missing blob hashes")
 
+	// ErrTooManyBlobs is returned if a blob transaction exceeds the maximum number of blobs.
+	ErrTooManyBlobs = errors.New("blob transaction has too many blobs")
+
 	// ErrBlobTxCreate is returned if a blob transaction has no explicit to field.
 	ErrBlobTxCreate = errors.New("blob transaction of type create")
 
@@ -124,6 +124,9 @@ var (
 	// Message validation errors:
 	ErrEmptyAuthList   = errors.New("EIP-7702 transaction with empty auth list")
 	ErrSetCodeTxCreate = errors.New("EIP-7702 transaction cannot be used to create contract")
+
+	// -- EIP-7825 errors --
+	ErrGasLimitTooHigh = errors.New("transaction gas limit too high")
 )
 
 // EIP-7702 state transition errors.
@@ -134,4 +137,9 @@ var (
 	ErrAuthorizationInvalidSignature   = errors.New("EIP-7702 authorization has invalid signature")
 	ErrAuthorizationDestinationHasCode = errors.New("EIP-7702 authorization destination is a contract")
 	ErrAuthorizationNonceMismatch      = errors.New("EIP-7702 authorization nonce does not match current account nonce")
+
+	// ErrOutOfGasRuntime is returned when the transaction's gas budget cannot
+	// cover an EIP-2780 runtime charge. The transaction remains valid: the top
+	// frame halts out of gas and its state changes are reverted.
+	ErrOutOfGasRuntime = errors.New("out of gas covering EIP-2780 runtime charge")
 )

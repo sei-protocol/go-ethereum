@@ -42,6 +42,7 @@ type callLog struct {
 	Address common.Address `json:"address"`
 	Topics  []common.Hash  `json:"topics"`
 	Data    hexutil.Bytes  `json:"data"`
+	Index   hexutil.Uint   `json:"index"`
 	// Position of the log relative to subcalls within the same trace
 	// See https://github.com/ethereum/go-ethereum/pull/28389 for details
 	Position hexutil.Uint `json:"position"`
@@ -224,9 +225,11 @@ func (t *callTracer) OnTxEnd(receipt *types.Receipt, err error) {
 	if err != nil {
 		return
 	}
-	if receipt != nil && len(t.callstack) > 0 {
-		// t.callstack could be empty if Stop is called before the first
-		// OnEnter occurs.
+	// The callstack is empty if Stop is called before the first OnEnter.
+	if len(t.callstack) == 0 {
+		return
+	}
+	if receipt != nil {
 		t.callstack[0].GasUsed = receipt.GasUsed
 	}
 	if t.config.WithLog {
@@ -252,6 +255,7 @@ func (t *callTracer) OnLog(log *types.Log) {
 		Address:  log.Address,
 		Topics:   log.Topics,
 		Data:     log.Data,
+		Index:    hexutil.Uint(log.Index),
 		Position: hexutil.Uint(len(t.callstack[len(t.callstack)-1].Calls)),
 	}
 	t.callstack[len(t.callstack)-1].Logs = append(t.callstack[len(t.callstack)-1].Logs, l)

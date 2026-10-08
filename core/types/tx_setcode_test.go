@@ -17,12 +17,9 @@
 package types
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/holiman/uint256"
-	"github.com/stretchr/testify/require"
 )
 
 // TestParseDelegation tests a few possible delegation designator values and
@@ -70,18 +67,4 @@ func TestParseDelegation(t *testing.T) {
 			t.Fatalf("failed to parse, want %s", tt.want.Hex())
 		}
 	}
-}
-
-func TestParseSetCodeAuthorization(t *testing.T) {
-	s := "{\"chainId\":\"0x1\",\"address\":\"0x4517e44cC1762e589296DF61931Ae19B1DA14e32\",\"nonce\":\"0x0\",\"yParity\":\"0x1\",\"r\":\"0x445ef4a54b14eb5820ae1a2f7ab15c41c1f61a3fa4b8630675b58aa8ebf8965c\",\"s\":\"0x0c733d6be254eef8d13d3715fa7807b710336093a6ef12dc7e9d32f633250373\"}"
-	sca := SetCodeAuthorization{}
-	require.Nil(t, json.Unmarshal([]byte(s), &sca))
-	require.Equal(t, SetCodeAuthorization{
-		ChainID: *uint256.NewInt(1),
-		Address: common.HexToAddress("0x4517e44cC1762e589296DF61931Ae19B1DA14e32"),
-		Nonce:   0,
-		V:       1,
-		R:       *uint256.MustFromHex("0x445ef4a54b14eb5820ae1a2f7ab15c41c1f61a3fa4b8630675b58aa8ebf8965c"),
-		S:       *uint256.MustFromHex("0xc733d6be254eef8d13d3715fa7807b710336093a6ef12dc7e9d32f633250373"),
-	}, sca)
 }
