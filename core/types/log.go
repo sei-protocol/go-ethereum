@@ -48,7 +48,7 @@ type Log struct {
 	// hash of the block in which the transaction was included
 	BlockHash common.Hash `json:"blockHash" rlp:"-"`
 	// timestamp of the block in which the transaction was included
-	BlockTimestamp uint64 `json:"blockTimestamp" rlp:"-"`
+	BlockTimestamp uint64 `json:"blockTimestamp,omitempty" rlp:"-"`
 	// index of the log in the block
 	Index uint `json:"logIndex" rlp:"-"`
 

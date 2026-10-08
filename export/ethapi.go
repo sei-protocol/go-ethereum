@@ -18,8 +18,13 @@
 package export
 
 import (
+	"math/big"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/internal/ethapi/override"
+	"github.com/ethereum/go-ethereum/params"
 )
 
 type (
@@ -33,11 +38,26 @@ type (
 )
 
 var (
-	NewRPCTransaction               = ethapi.NewRPCTransaction
-	NewRPCTransactionFromBlockIndex = ethapi.NewRPCTransactionFromBlockIndex
-	NewRPCPendingTransaction        = ethapi.NewRPCPendingTransaction
-	AccessList                      = ethapi.AccessList
-	DoCall                          = ethapi.DoCall
-	DoEstimateGas                   = ethapi.DoEstimateGas
-	DoEstimateGasAfterCalls         = ethapi.DoEstimateGasAfterCalls
+	NewRPCPendingTransaction = ethapi.NewRPCPendingTransaction
+	AccessList               = ethapi.AccessList
+	DoCall                   = ethapi.DoCall
+	DoEstimateGas            = ethapi.DoEstimateGas
+	DoEstimateGasAfterCalls  = ethapi.DoEstimateGasAfterCalls
 )
+
+// NewRPCTransaction returns the RPC representation of tx without blockTimestamp.
+func NewRPCTransaction(tx *types.Transaction, blockHash common.Hash, blockNumber uint64, blockTime uint64, index uint64, baseFee *big.Int, config *params.ChainConfig) *RPCTransaction {
+	result := ethapi.NewRPCTransaction(tx, blockHash, blockNumber, blockTime, index, baseFee, config)
+	result.BlockTimestamp = nil
+	return result
+}
+
+// NewRPCTransactionFromBlockIndex returns the RPC representation of the transaction at index in b
+// without blockTimestamp, or nil if index is out of range.
+func NewRPCTransactionFromBlockIndex(b *types.Block, index uint64, config *params.ChainConfig) *RPCTransaction {
+	result := ethapi.NewRPCTransactionFromBlockIndex(b, index, config)
+	if result != nil {
+		result.BlockTimestamp = nil
+	}
+	return result
+}

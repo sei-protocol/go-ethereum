@@ -22,7 +22,7 @@ func (l Log) MarshalJSON() ([]byte, error) {
 		TxHash         common.Hash    `json:"transactionHash" gencodec:"required" rlp:"-"`
 		TxIndex        hexutil.Uint   `json:"transactionIndex" rlp:"-"`
 		BlockHash      common.Hash    `json:"blockHash" rlp:"-"`
-		BlockTimestamp hexutil.Uint64 `json:"blockTimestamp" rlp:"-"`
+		BlockTimestamp hexutil.Uint64 `json:"blockTimestamp,omitempty" rlp:"-"`
 		Index          hexutil.Uint   `json:"logIndex" rlp:"-"`
 		Removed        bool           `json:"removed" rlp:"-"`
 	}
@@ -50,7 +50,7 @@ func (l *Log) UnmarshalJSON(input []byte) error {
 		TxHash         *common.Hash    `json:"transactionHash" gencodec:"required" rlp:"-"`
 		TxIndex        *hexutil.Uint   `json:"transactionIndex" rlp:"-"`
 		BlockHash      *common.Hash    `json:"blockHash" rlp:"-"`
-		BlockTimestamp *hexutil.Uint64 `json:"blockTimestamp" rlp:"-"`
+		BlockTimestamp *hexutil.Uint64 `json:"blockTimestamp,omitempty" rlp:"-"`
 		Index          *hexutil.Uint   `json:"logIndex" rlp:"-"`
 		Removed        *bool           `json:"removed" rlp:"-"`
 	}
