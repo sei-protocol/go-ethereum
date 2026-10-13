@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
+	"math/bits"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -185,6 +186,9 @@ var unmarshalU256Tests = []unmarshalTest{
 	{input: "10", wantErr: errNonString(u256T)},
 	{input: `"0"`, wantErr: wrapTypeError(ErrMissingPrefix, u256T)},
 	{input: `"0x"`, wantErr: wrapTypeError(ErrEmptyNumber, u256T)},
+	{input: `"0x01"`, want: big.NewInt(1)},
+	{input: `"0x0000ff"`, want: big.NewInt(0xff)},
+	{input: `"0x00"`, want: big.NewInt(0)},
 	{input: `"0xx"`, wantErr: wrapTypeError(ErrSyntax, u256T)},
 	{input: `"0x1zz01"`, wantErr: wrapTypeError(ErrSyntax, u256T)},
 	{
@@ -195,7 +199,6 @@ var unmarshalU256Tests = []unmarshalTest{
 	// valid encoding
 	{input: `""`, want: big.NewInt(0)},
 	{input: `"0x0"`, want: big.NewInt(0)},
-	{input: `"0x01"`, want: big.NewInt(1)},
 	{input: `"0x2"`, want: big.NewInt(0x2)},
 	{input: `"0x2F2"`, want: big.NewInt(0x2f2)},
 	{input: `"0X2F2"`, want: big.NewInt(0x2f2)},
@@ -384,7 +387,7 @@ func TestUnmarshalUint(t *testing.T) {
 	for _, test := range unmarshalUintTests {
 		var v Uint
 		err := json.Unmarshal([]byte(test.input), &v)
-		if uintBits == 32 && test.wantErr32bit != nil {
+		if bits.UintSize == 32 && test.wantErr32bit != nil {
 			checkError(t, test.input, err, test.wantErr32bit)
 			continue
 		}
@@ -406,7 +409,6 @@ func TestUnmarshalFixedUnprefixedText(t *testing.T) {
 	}{
 		{input: "0x2", wantErr: ErrOddLength},
 		{input: "2", wantErr: ErrOddLength},
-		{input: "4444", wantErr: errors.New("hex string has length 4, want 8 for x")},
 		{input: "4444", wantErr: errors.New("hex string has length 4, want 8 for x")},
 		// check that output is not modified for partially correct input
 		{input: "444444gg", wantErr: ErrSyntax, want: []byte{0, 0, 0, 0}},

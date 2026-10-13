@@ -20,6 +20,7 @@ import (
 	"math/rand"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 )
 
@@ -65,6 +66,12 @@ func TestBlockchain(t *testing.T) {
 	// This directory contains no test.
 	bt.skipLoad(`.*\.meta/.*`)
 
+	// Broken tests
+	bt.skipLoad(`RevertInCreateInInit`)
+	bt.skipLoad(`InitCollisionParis`)
+	bt.skipLoad(`dynamicAccountOverwriteEmpty_Paris`)
+	bt.skipLoad(`create2collisionStorageParis`)
+
 	bt.walk(t, blockTestDir, func(t *testing.T, name string, test *BlockTest) {
 		execBlockTest(t, bt, test)
 	})
@@ -75,15 +82,22 @@ func TestBlockchain(t *testing.T) {
 
 // TestExecutionSpecBlocktests runs the test fixtures from execution-spec-tests.
 func TestExecutionSpecBlocktests(t *testing.T) {
-	t.Skip("state root will be different from what official geth calculates because we don't burn")
-	// if !common.FileExist(executionSpecBlockchainTestDir) {
-	// 	t.Skipf("directory %s does not exist", executionSpecBlockchainTestDir)
-	// }
-	// bt := new(testMatcher)
+	if !common.FileExist(executionSpecBlockchainTestDir) {
+		t.Skipf("directory %s does not exist", executionSpecBlockchainTestDir)
+	}
+	bt := new(testMatcher)
 
-	// bt.walk(t, executionSpecBlockchainTestDir, func(t *testing.T, name string, test *BlockTest) {
-	// 	execBlockTest(t, bt, test)
-	// })
+	// These tests require us to handle scenarios where a system contract is not deployed at a fork
+	bt.skipLoad(`.*eip7251_consolidations/contract_deployment/system_contract_deployment\.json`)
+	bt.skipLoad(`.*eip7002_el_triggerable_withdrawals/contract_deployment/system_contract_deployment\.json`)
+
+	// TODO: these require netting the BAL changes over a whole block access index
+	bt.skipLoad(`.*bal_withdrawals_and_dequeues_net_balance_at_last_index\.json/.*forward_all\]`)
+	bt.skipLoad(`.*bal_post_execution_calls_net_storage_at_last_index\.json`)
+
+	bt.walk(t, executionSpecBlockchainTestDir, func(t *testing.T, name string, test *BlockTest) {
+		execBlockTest(t, bt, test)
+	})
 }
 
 func execBlockTest(t *testing.T, bt *testMatcher, test *BlockTest) {

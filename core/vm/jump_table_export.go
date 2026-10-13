@@ -26,10 +26,14 @@ import (
 // the rules.
 func LookupInstructionSet(rules params.Rules) (JumpTable, error) {
 	switch {
-	case rules.IsVerkle:
+	case rules.IsUBT:
 		return newCancunInstructionSet(), errors.New("verkle-fork not defined yet")
+	case rules.IsBogota:
+		return newBogotaInstructionSet(), nil
+	case rules.IsAmsterdam:
+		return newAmsterdamInstructionSet(), nil
 	case rules.IsOsaka:
-		return newPragueInstructionSet(), errors.New("osaka-fork not defined yet")
+		return newOsakaInstructionSet(), nil
 	case rules.IsPrague:
 		return newPragueInstructionSet(), nil
 	case rules.IsCancun:
@@ -37,7 +41,7 @@ func LookupInstructionSet(rules params.Rules) (JumpTable, error) {
 	case rules.IsShanghai:
 		return newShanghaiInstructionSet(), nil
 	case rules.IsMerge:
-		return NewMergeInstructionSet(), nil
+		return newMergeInstructionSet(), nil
 	case rules.IsLondon:
 		return newLondonInstructionSet(), nil
 	case rules.IsBerlin:

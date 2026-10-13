@@ -21,7 +21,7 @@ permissions:
 
 env:
   # Matches build/checksums.txt's pinned Go toolchain (separate from the smoke workflow's version)
-  GO_VERSION: '1.24.1'
+  GO_VERSION: '1.27.1'
 
 jobs:
   unit_tests:

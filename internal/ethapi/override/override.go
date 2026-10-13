@@ -19,13 +19,16 @@ package override
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math/big"
+	"slices"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
 )
 
@@ -53,13 +56,17 @@ func (diff *StateOverride) has(address common.Address) bool {
 }
 
 // Apply overrides the fields of specified accounts into the given state.
-func (diff *StateOverride) Apply(statedb vm.StateDB, precompiles vm.PrecompiledContracts) error {
+func (diff *StateOverride) Apply(statedb vm.SeiStateDB, precompiles vm.PrecompiledContracts) error {
 	if diff == nil {
 		return nil
 	}
+	// Iterate in deterministic order so error messages and behavior are stable (e.g. for tests).
+	addrs := slices.SortedFunc(maps.Keys(*diff), common.Address.Cmp)
+
 	// Tracks destinations of precompiles that were moved.
 	dirtyAddrs := make(map[common.Address]struct{})
-	for addr, account := range *diff {
+	for _, addr := range addrs {
+		account := (*diff)[addr]
 		// If a precompile was moved to this address already, it can't be overridden.
 		if _, ok := dirtyAddrs[addr]; ok {
 			return fmt.Errorf("account %s has already been overridden by a precompile", addr.Hex())
@@ -90,7 +97,7 @@ func (diff *StateOverride) Apply(statedb vm.StateDB, precompiles vm.PrecompiledC
 		}
 		// Override account(contract) code.
 		if account.Code != nil {
-			statedb.SetCode(addr, *account.Code)
+			statedb.SetCode(addr, *account.Code, tracing.CodeChangeUnspecified)
 		}
 		// Override account balance.
 		if account.Balance != nil {
@@ -114,7 +121,7 @@ func (diff *StateOverride) Apply(statedb vm.StateDB, precompiles vm.PrecompiledC
 	// Now finalize the changes. Finalize is normally performed between transactions.
 	// By using finalize, the overrides are semantically behaving as
 	// if they were created in a transaction just before the tracing occur.
-	statedb.Finalise(false)
+	statedb.Finalise(params.Rules{})
 	return nil
 }
 
@@ -182,7 +189,8 @@ func (o *BlockOverrides) MakeHeader(header *types.Header) *types.Header {
 	if o.Number != nil {
 		h.Number = o.Number.ToInt()
 	}
-	if o.Difficulty != nil {
+	// Difficulty is a no-op on post-merge (zero-difficulty) headers.
+	if o.Difficulty != nil && (h.Difficulty == nil || h.Difficulty.Sign() != 0) {
 		h.Difficulty = o.Difficulty.ToInt()
 	}
 	if o.Time != nil {

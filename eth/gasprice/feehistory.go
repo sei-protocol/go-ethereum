@@ -108,7 +108,9 @@ func (oracle *Oracle) processBlock(bf *blockFees, percentiles []float64) {
 	bf.results.gasUsedRatio = float64(bf.header.GasUsed) / float64(bf.header.GasLimit)
 	if blobGasUsed := bf.header.BlobGasUsed; blobGasUsed != nil {
 		maxBlobGas := eip4844.MaxBlobGasPerBlock(config, bf.header.Time)
-		bf.results.blobGasUsedRatio = float64(*blobGasUsed) / float64(maxBlobGas)
+		if maxBlobGas != 0 {
+			bf.results.blobGasUsedRatio = float64(*blobGasUsed) / float64(maxBlobGas)
+		}
 	}
 
 	if len(percentiles) == 0 {
@@ -301,7 +303,7 @@ func (oracle *Oracle) FeeHistory(ctx context.Context, blocks uint64, unresolvedL
 						results <- fees
 					} else {
 						if len(rewardPercentiles) != 0 {
-							fees.block, _, fees.err = oracle.backend.BlockByNumber(ctx, rpc.BlockNumber(blockNumber))
+							fees.block, fees.err = oracle.backend.BlockByNumber(ctx, rpc.BlockNumber(blockNumber))
 							if fees.block != nil && fees.err == nil {
 								fees.receipts, fees.err = oracle.backend.GetReceipts(ctx, fees.block.Hash())
 								fees.header = fees.block.Header()

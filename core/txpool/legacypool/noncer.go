@@ -21,14 +21,13 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
-	"github.com/ethereum/go-ethereum/core/vm"
 )
 
 // noncer is a tiny virtual state database to manage the executable nonces of
 // accounts in the pool, falling back to reading from a real state database if
 // an account is unknown.
 type noncer struct {
-	fallback vm.StateDB
+	fallback *state.StateDB
 	nonces   map[common.Address]uint64
 	lock     sync.Mutex
 }

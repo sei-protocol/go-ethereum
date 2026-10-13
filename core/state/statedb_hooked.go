@@ -17,174 +17,173 @@
 package state
 
 import (
+	"bytes"
 	"math/big"
+	"sort"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/stateless"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/core/types/bal"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/trie/utils"
 	"github.com/holiman/uint256"
 )
 
-// HookedStateDB represents a statedb which emits calls to tracing-hooks
+// hookedStateDB represents a statedb which emits calls to tracing-hooks
 // on state operations.
-type HookedStateDB struct {
-	vm.StateDB
+type hookedStateDB struct {
+	inner HookableStateDB
 	hooks *tracing.Hooks
 }
 
 // NewHookedState wraps the given stateDb with the given hooks
-func NewHookedState(stateDb vm.StateDB, hooks *tracing.Hooks) *HookedStateDB {
-	s := &HookedStateDB{stateDb, hooks}
+func NewHookedState(stateDb HookableStateDB, hooks *tracing.Hooks) *hookedStateDB {
+	s := &hookedStateDB{stateDb, hooks}
 	if s.hooks == nil {
 		s.hooks = new(tracing.Hooks)
 	}
 	return s
 }
 
-func (s *HookedStateDB) CreateAccount(addr common.Address) {
-	s.StateDB.CreateAccount(addr)
+func (s *hookedStateDB) CreateAccount(addr common.Address) {
+	s.inner.CreateAccount(addr)
 }
 
-func (s *HookedStateDB) CreateContract(addr common.Address) {
-	s.StateDB.CreateContract(addr)
+func (s *hookedStateDB) CreateContract(addr common.Address) {
+	s.inner.CreateContract(addr)
 }
 
-func (s *HookedStateDB) GetBalance(addr common.Address) *uint256.Int {
-	return s.StateDB.GetBalance(addr)
+func (s *hookedStateDB) IsNewContract(addr common.Address) bool {
+	return s.inner.IsNewContract(addr)
 }
 
-func (s *HookedStateDB) GetNonce(addr common.Address) uint64 {
-	return s.StateDB.GetNonce(addr)
+func (s *hookedStateDB) GetBalance(addr common.Address) *uint256.Int {
+	return s.inner.GetBalance(addr)
 }
 
-func (s *HookedStateDB) GetCodeHash(addr common.Address) common.Hash {
-	return s.StateDB.GetCodeHash(addr)
+func (s *hookedStateDB) GetNonce(addr common.Address) uint64 {
+	return s.inner.GetNonce(addr)
 }
 
-func (s *HookedStateDB) GetCode(addr common.Address) []byte {
-	return s.StateDB.GetCode(addr)
+func (s *hookedStateDB) GetCodeHash(addr common.Address) common.Hash {
+	return s.inner.GetCodeHash(addr)
 }
 
-func (s *HookedStateDB) GetCodeSize(addr common.Address) int {
-	return s.StateDB.GetCodeSize(addr)
+func (s *hookedStateDB) GetCode(addr common.Address) []byte {
+	return s.inner.GetCode(addr)
 }
 
-func (s *HookedStateDB) AddRefund(u uint64) {
-	s.StateDB.AddRefund(u)
+func (s *hookedStateDB) GetCodeSize(addr common.Address) int {
+	return s.inner.GetCodeSize(addr)
 }
 
-func (s *HookedStateDB) SubRefund(u uint64) {
-	s.StateDB.SubRefund(u)
+func (s *hookedStateDB) AddRefund(u uint64) {
+	s.inner.AddRefund(u)
 }
 
-func (s *HookedStateDB) GetRefund() uint64 {
-	return s.StateDB.GetRefund()
+func (s *hookedStateDB) SubRefund(u uint64) {
+	s.inner.SubRefund(u)
 }
 
-func (s *HookedStateDB) GetCommittedState(addr common.Address, hash common.Hash) common.Hash {
-	return s.StateDB.GetCommittedState(addr, hash)
+func (s *hookedStateDB) GetRefund() uint64 {
+	return s.inner.GetRefund()
 }
 
-func (s *HookedStateDB) GetState(addr common.Address, hash common.Hash) common.Hash {
-	return s.StateDB.GetState(addr, hash)
+func (s *hookedStateDB) GetStateAndCommittedState(addr common.Address, hash common.Hash) (common.Hash, common.Hash) {
+	return s.inner.GetStateAndCommittedState(addr, hash)
 }
 
-func (s *HookedStateDB) GetStorageRoot(addr common.Address) common.Hash {
-	return s.StateDB.GetStorageRoot(addr)
+func (s *hookedStateDB) GetState(addr common.Address, hash common.Hash) common.Hash {
+	return s.inner.GetState(addr, hash)
 }
 
-func (s *HookedStateDB) GetTransientState(addr common.Address, key common.Hash) common.Hash {
-	return s.StateDB.GetTransientState(addr, key)
+func (s *hookedStateDB) GetTransientState(addr common.Address, key common.Hash) common.Hash {
+	return s.inner.GetTransientState(addr, key)
 }
 
-func (s *HookedStateDB) SetTransientState(addr common.Address, key, value common.Hash) {
-	s.StateDB.SetTransientState(addr, key, value)
+func (s *hookedStateDB) SetTransientState(addr common.Address, key, value common.Hash) {
+	s.inner.SetTransientState(addr, key, value)
 }
 
-func (s *HookedStateDB) HasSelfDestructed(addr common.Address) bool {
-	return s.StateDB.HasSelfDestructed(addr)
+func (s *hookedStateDB) HasSelfDestructed(addr common.Address) bool {
+	return s.inner.HasSelfDestructed(addr)
 }
 
-func (s *HookedStateDB) Exist(addr common.Address) bool {
-	return s.StateDB.Exist(addr)
+func (s *hookedStateDB) Exist(addr common.Address) bool {
+	return s.inner.Exist(addr)
 }
 
-func (s *HookedStateDB) Empty(addr common.Address) bool {
-	return s.StateDB.Empty(addr)
+func (s *hookedStateDB) Touch(addr common.Address) {
+	s.inner.Touch(addr)
 }
 
-func (s *HookedStateDB) AddressInAccessList(addr common.Address) bool {
-	return s.StateDB.AddressInAccessList(addr)
+func (s *hookedStateDB) Empty(addr common.Address) bool {
+	return s.inner.Empty(addr)
 }
 
-func (s *HookedStateDB) SlotInAccessList(addr common.Address, slot common.Hash) (addressOk bool, slotOk bool) {
-	return s.StateDB.SlotInAccessList(addr, slot)
+func (s *hookedStateDB) AddressInAccessList(addr common.Address) bool {
+	return s.inner.AddressInAccessList(addr)
 }
 
-func (s *HookedStateDB) AddAddressToAccessList(addr common.Address) {
-	s.StateDB.AddAddressToAccessList(addr)
+func (s *hookedStateDB) SlotInAccessList(addr common.Address, slot common.Hash) (addressOk bool, slotOk bool) {
+	return s.inner.SlotInAccessList(addr, slot)
 }
 
-func (s *HookedStateDB) AddSlotToAccessList(addr common.Address, slot common.Hash) {
-	s.StateDB.AddSlotToAccessList(addr, slot)
+func (s *hookedStateDB) AddAddressToAccessList(addr common.Address) {
+	s.inner.AddAddressToAccessList(addr)
 }
 
-func (s *HookedStateDB) PointCache() *utils.PointCache {
-	return s.StateDB.PointCache()
+func (s *hookedStateDB) AddSlotToAccessList(addr common.Address, slot common.Hash) {
+	s.inner.AddSlotToAccessList(addr, slot)
 }
 
-func (s *HookedStateDB) Prepare(rules params.Rules, sender, coinbase common.Address, dest *common.Address, precompiles []common.Address, txAccesses types.AccessList) {
-	s.StateDB.Prepare(rules, sender, coinbase, dest, precompiles, txAccesses)
+func (s *hookedStateDB) Prepare(rules params.Rules, sender, coinbase common.Address, dest *common.Address, precompiles []common.Address, txAccesses types.AccessList) {
+	s.inner.Prepare(rules, sender, coinbase, dest, precompiles, txAccesses)
 }
 
-func (s *HookedStateDB) RevertToSnapshot(i int) {
-	s.StateDB.RevertToSnapshot(i)
+func (s *hookedStateDB) RevertToSnapshot(i int) {
+	s.inner.RevertToSnapshot(i)
 }
 
-func (s *HookedStateDB) Snapshot() int {
-	return s.StateDB.Snapshot()
+func (s *hookedStateDB) Snapshot() int {
+	return s.inner.Snapshot()
 }
 
-func (s *HookedStateDB) AddPreimage(hash common.Hash, bytes []byte) {
-	s.StateDB.AddPreimage(hash, bytes)
+func (s *hookedStateDB) AddPreimage(hash common.Hash, bytes []byte) {
+	s.inner.AddPreimage(hash, bytes)
 }
 
-func (s *HookedStateDB) Witness() *stateless.Witness {
-	return s.StateDB.Witness()
+func (s *hookedStateDB) Witness() *stateless.Witness {
+	return s.inner.Witness()
 }
 
-func (s *HookedStateDB) AccessEvents() *vm.AccessEvents {
-	return s.StateDB.AccessEvents()
+func (s *hookedStateDB) AccessEvents() *AccessEvents {
+	return s.inner.AccessEvents()
 }
 
-func (s *HookedStateDB) SubBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) uint256.Int {
-	prev := s.StateDB.SubBalance(addr, amount, reason)
-	// tracked already
-	// if s.hooks.OnBalanceChange != nil && !amount.IsZero() {
-	// 	newBalance := new(uint256.Int).Sub(&prev, amount)
-	// 	s.hooks.OnBalanceChange(addr, prev.ToBig(), newBalance.ToBig(), reason)
-	// }
+func (s *hookedStateDB) SubBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) uint256.Int {
+	prev := s.inner.SubBalance(addr, amount, reason)
+	if s.hooks.OnBalanceChange != nil && !amount.IsZero() {
+		newBalance := new(uint256.Int).Sub(&prev, amount)
+		s.hooks.OnBalanceChange(addr, prev.ToBig(), newBalance.ToBig(), reason)
+	}
 	return prev
 }
 
-func (s *HookedStateDB) AddBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) uint256.Int {
-	prev := s.StateDB.AddBalance(addr, amount, reason)
-	// tracked already
-	// if s.hooks.OnBalanceChange != nil && !amount.IsZero() {
-	// 	newBalance := new(uint256.Int).Add(&prev, amount)
-	// 	s.hooks.OnBalanceChange(addr, prev.ToBig(), newBalance.ToBig(), reason)
-	// }
+func (s *hookedStateDB) AddBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) uint256.Int {
+	prev := s.inner.AddBalance(addr, amount, reason)
+	if s.hooks.OnBalanceChange != nil && !amount.IsZero() {
+		newBalance := new(uint256.Int).Add(&prev, amount)
+		s.hooks.OnBalanceChange(addr, prev.ToBig(), newBalance.ToBig(), reason)
+	}
 	return prev
 }
 
-func (s *HookedStateDB) SetNonce(address common.Address, nonce uint64, reason tracing.NonceChangeReason) {
-	prev := s.StateDB.GetNonce(address)
-	s.StateDB.SetNonce(address, nonce, reason)
+func (s *hookedStateDB) SetNonce(address common.Address, nonce uint64, reason tracing.NonceChangeReason) {
+	prev := s.inner.GetNonce(address)
+	s.inner.SetNonce(address, nonce, reason)
 	if s.hooks.OnNonceChangeV2 != nil {
 		s.hooks.OnNonceChangeV2(address, prev, nonce, reason)
 	} else if s.hooks.OnNonceChange != nil {
@@ -192,94 +191,108 @@ func (s *HookedStateDB) SetNonce(address common.Address, nonce uint64, reason tr
 	}
 }
 
-func (s *HookedStateDB) SetCode(address common.Address, code []byte) []byte {
-	prev := s.StateDB.SetCode(address, code)
-	if s.hooks.OnCodeChange != nil {
-		prevHash := types.EmptyCodeHash
-		if len(prev) != 0 {
-			prevHash = crypto.Keccak256Hash(prev)
+func (s *hookedStateDB) SetCode(address common.Address, code []byte, reason tracing.CodeChangeReason) []byte {
+	prev := s.inner.SetCode(address, code, reason)
+
+	if s.hooks.OnCodeChangeV2 != nil || s.hooks.OnCodeChange != nil {
+		prevHash := crypto.Keccak256Hash(prev)
+		codeHash := crypto.Keccak256Hash(code)
+
+		// Invoke the hooks only if the contract code is changed
+		if prevHash != codeHash {
+			if s.hooks.OnCodeChangeV2 != nil {
+				s.hooks.OnCodeChangeV2(address, prevHash, prev, codeHash, code, reason)
+			} else if s.hooks.OnCodeChange != nil {
+				s.hooks.OnCodeChange(address, prevHash, prev, codeHash, code)
+			}
 		}
-		s.hooks.OnCodeChange(address, prevHash, prev, crypto.Keccak256Hash(code), code)
 	}
 	return prev
 }
 
-func (s *HookedStateDB) SetState(address common.Address, key common.Hash, value common.Hash) common.Hash {
-	prev := s.StateDB.SetState(address, key, value)
+func (s *hookedStateDB) SetState(address common.Address, key common.Hash, value common.Hash) common.Hash {
+	prev := s.inner.SetState(address, key, value)
 	if s.hooks.OnStorageChange != nil && prev != value {
 		s.hooks.OnStorageChange(address, key, prev, value)
 	}
 	return prev
 }
 
-func (s *HookedStateDB) SelfDestruct(address common.Address) uint256.Int {
-	var prevCode []byte
-	var prevCodeHash common.Hash
-
-	if s.hooks.OnCodeChange != nil {
-		prevCode = s.StateDB.GetCode(address)
-		prevCodeHash = s.StateDB.GetCodeHash(address)
-	}
-
-	prev := s.StateDB.SelfDestruct(address)
-
-	if s.hooks.OnBalanceChange != nil && !prev.IsZero() {
-		s.hooks.OnBalanceChange(address, prev.ToBig(), new(big.Int), tracing.BalanceDecreaseSelfdestruct)
-	}
-
-	if s.hooks.OnCodeChange != nil && len(prevCode) > 0 {
-		s.hooks.OnCodeChange(address, prevCodeHash, prevCode, types.EmptyCodeHash, nil)
-	}
-
-	return prev
+func (s *hookedStateDB) SelfDestruct(address common.Address) {
+	s.inner.SelfDestruct(address)
 }
 
-func (s *HookedStateDB) SelfDestruct6780(address common.Address) (uint256.Int, bool) {
-	var prevCode []byte
-	var prevCodeHash common.Hash
-
-	if s.hooks.OnCodeChange != nil {
-		prevCodeHash = s.StateDB.GetCodeHash(address)
-		prevCode = s.StateDB.GetCode(address)
-	}
-
-	prev, changed := s.StateDB.SelfDestruct6780(address)
-
-	if s.hooks.OnBalanceChange != nil && changed && !prev.IsZero() {
-		s.hooks.OnBalanceChange(address, prev.ToBig(), new(big.Int), tracing.BalanceDecreaseSelfdestruct)
-	}
-
-	if s.hooks.OnCodeChange != nil && changed && len(prevCode) > 0 {
-		s.hooks.OnCodeChange(address, prevCodeHash, prevCode, types.EmptyCodeHash, nil)
-	}
-
-	return prev, changed
-}
-
-func (s *HookedStateDB) AddLog(log *types.Log) {
+func (s *hookedStateDB) AddLog(log *types.Log) {
 	// The inner will modify the log (add fields), so invoke that first
-	s.StateDB.AddLog(log)
+	s.inner.AddLog(log)
 	if s.hooks.OnLog != nil {
 		s.hooks.OnLog(log)
 	}
 }
 
-func (s *HookedStateDB) Finalise(deleteEmptyObjects bool) {
-	defer s.StateDB.Finalise(deleteEmptyObjects)
-	if s.hooks.OnBalanceChange == nil {
-		return
+func (s *hookedStateDB) Finalise(rules params.Rules) *bal.ConstructionBlockAccessList {
+	inner, ok := s.inner.(*StateDB)
+	if !ok || s.hooks.OnBalanceChange == nil && s.hooks.OnNonceChangeV2 == nil && s.hooks.OnNonceChange == nil && s.hooks.OnCodeChangeV2 == nil && s.hooks.OnCodeChange == nil {
+		// Short circuit if no relevant hooks are set, or the journal of a
+		// non-native state is not accessible.
+		return s.inner.Finalise(rules)
 	}
-	statedb, ok := s.StateDB.(*StateDB)
-	if !ok {
-		return
+
+	// Collect all self-destructed addresses first, then sort them to ensure
+	// that state change hooks will be invoked in deterministic
+	// order when the accounts are deleted below
+	var selfDestructedAddrs []common.Address
+	for addr := range inner.journal.mutations {
+		obj := inner.stateObjects[addr]
+		if obj == nil || !obj.selfDestructed {
+			// Not self-destructed, keep searching.
+			continue
+		}
+		selfDestructedAddrs = append(selfDestructedAddrs, addr)
 	}
-	for addr := range statedb.journal.dirties {
-		obj := statedb.stateObjects[addr]
-		if obj != nil && obj.selfDestructed {
-			// If ether was sent to account post-selfdestruct it is burnt.
+	sort.Slice(selfDestructedAddrs, func(i, j int) bool {
+		return bytes.Compare(selfDestructedAddrs[i][:], selfDestructedAddrs[j][:]) < 0
+	})
+
+	// EIP-8246 (Amsterdam) removes the SELFDESTRUCT burn: a self-destructed
+	// account that retains a non-zero balance is preserved as a balance-only
+	// account rather than removed, so its balance is no longer burnt.
+	burnsBalance := !rules.IsAmsterdam
+
+	for _, addr := range selfDestructedAddrs {
+		obj := inner.stateObjects[addr]
+		// Bingo: state object was self-destructed, call relevant hooks.
+
+		if burnsBalance && s.hooks.OnBalanceChange != nil {
 			if bal := obj.Balance(); bal.Sign() != 0 {
 				s.hooks.OnBalanceChange(addr, bal.ToBig(), new(big.Int), tracing.BalanceDecreaseSelfdestructBurn)
 			}
 		}
+
+		// Nonce is set to reset on self-destruct.
+		//
+		// TODO(rjl) shall we emit the nonce change if the pre-tx nonce was zero?
+		if s.hooks.OnNonceChangeV2 != nil {
+			s.hooks.OnNonceChangeV2(addr, obj.Nonce(), 0, tracing.NonceChangeSelfdestruct)
+		} else if s.hooks.OnNonceChange != nil {
+			s.hooks.OnNonceChange(addr, obj.Nonce(), 0)
+		}
+
+		// If an initcode invokes selfdestruct, do not emit a code change.
+		prevCodeHash := s.inner.GetCodeHash(addr)
+		if prevCodeHash == types.EmptyCodeHash {
+			continue
+		}
+		// Otherwise, trace the change.
+		if s.hooks.OnCodeChangeV2 != nil {
+			s.hooks.OnCodeChangeV2(addr, prevCodeHash, s.inner.GetCode(addr), types.EmptyCodeHash, nil, tracing.CodeChangeSelfDestruct)
+		} else if s.hooks.OnCodeChange != nil {
+			s.hooks.OnCodeChange(addr, prevCodeHash, s.inner.GetCode(addr), types.EmptyCodeHash, nil)
+		}
 	}
+	return s.inner.Finalise(rules)
+}
+
+func (s *hookedStateDB) SetTxContext(thash common.Hash, ti int, blockAccessIndex uint32) {
+	s.inner.SetTxContext(thash, ti, blockAccessIndex)
 }

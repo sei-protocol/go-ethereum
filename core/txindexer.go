@@ -17,12 +17,13 @@
 package core
 
 import (
-	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 )
 
@@ -47,25 +48,43 @@ type txIndexer struct {
 	//       and all others shouldn't.
 	limit uint64
 
+	// The current head of blockchain for transaction indexing. This field
+	// is accessed by both the indexer and the indexing progress queries.
+	head atomic.Uint64
+
+	// The current tail of the indexed transactions, null indicates
+	// that no transactions have been indexed yet.
+	//
+	// This field is accessed by both the indexer and the indexing
+	// progress queries.
+	tail atomic.Pointer[uint64]
+
 	// cutoff denotes the block number before which the chain segment should
 	// be pruned and not available locally.
-	cutoff   uint64
-	db       ethdb.Database
-	progress chan chan TxIndexProgress
-	term     chan chan struct{}
-	closed   chan struct{}
+	cutoff uint64
+	db     ethdb.Database
+	term   chan chan struct{}
+	closed chan struct{}
+
+	headCh  chan ChainHeadEvent
+	headSub event.Subscription
 }
 
 // newTxIndexer initializes the transaction indexer.
 func newTxIndexer(limit uint64, chain *BlockChain) *txIndexer {
+	cutoff, _ := chain.HistoryPruningCutoff()
 	indexer := &txIndexer{
-		limit:    limit,
-		cutoff:   chain.HistoryPruningCutoff(),
-		db:       chain.db,
-		progress: make(chan chan TxIndexProgress),
-		term:     make(chan chan struct{}),
-		closed:   make(chan struct{}),
+		limit:  limit,
+		cutoff: cutoff,
+		db:     chain.db,
+		term:   make(chan chan struct{}),
+		closed: make(chan struct{}),
+		headCh: make(chan ChainHeadEvent),
 	}
+	indexer.headSub = chain.SubscribeChainHeadEvent(indexer.headCh)
+	indexer.head.Store(indexer.resolveHead())
+	indexer.tail.Store(rawdb.ReadTxIndexTail(chain.db))
+
 	go indexer.loop(chain)
 
 	var msg string
@@ -153,6 +172,7 @@ func (indexer *txIndexer) repair(head uint64) {
 		// A crash may occur between the two delete operations,
 		// potentially leaving dangling indexes in the database.
 		// However, this is considered acceptable.
+		indexer.tail.Store(nil)
 		rawdb.DeleteTxIndexTail(indexer.db)
 		rawdb.DeleteAllTxLookupEntries(indexer.db, nil)
 		log.Warn("Purge transaction indexes", "head", head, "tail", *tail)
@@ -173,6 +193,7 @@ func (indexer *txIndexer) repair(head uint64) {
 		// Traversing the database directly within the transaction
 		// index namespace might be slow and expensive, but we
 		// have no choice.
+		indexer.tail.Store(nil)
 		rawdb.DeleteTxIndexTail(indexer.db)
 		rawdb.DeleteAllTxLookupEntries(indexer.db, nil)
 		log.Warn("Purge transaction indexes", "head", head, "cutoff", indexer.cutoff)
@@ -186,6 +207,7 @@ func (indexer *txIndexer) repair(head uint64) {
 		// A crash may occur between the two delete operations,
 		// potentially leaving dangling indexes in the database.
 		// However, this is considered acceptable.
+		indexer.tail.Store(&indexer.cutoff)
 		rawdb.WriteTxIndexTail(indexer.db, indexer.cutoff)
 		rawdb.DeleteAllTxLookupEntries(indexer.db, func(txhash common.Hash, blob []byte) bool {
 			n := rawdb.DecodeTxLookupEntry(blob, indexer.db)
@@ -195,23 +217,34 @@ func (indexer *txIndexer) repair(head uint64) {
 	}
 }
 
+// resolveHead resolves the block number of the current chain head.
+func (indexer *txIndexer) resolveHead() uint64 {
+	headBlockHash := rawdb.ReadHeadBlockHash(indexer.db)
+	if headBlockHash == (common.Hash{}) {
+		return 0
+	}
+	headBlockNumber, ok := rawdb.ReadHeaderNumber(indexer.db, headBlockHash)
+	if !ok {
+		return 0
+	}
+	return headBlockNumber
+}
+
 // loop is the scheduler of the indexer, assigning indexing/unindexing tasks depending
 // on the received chain event.
 func (indexer *txIndexer) loop(chain *BlockChain) {
 	defer close(indexer.closed)
+	defer indexer.headSub.Unsubscribe()
 
 	// Listening to chain events and manipulate the transaction indexes.
 	var (
-		stop chan struct{}                                 // Non-nil if background routine is active
-		done chan struct{}                                 // Non-nil if background routine is active
-		head = rawdb.ReadHeadBlock(indexer.db).NumberU64() // The latest announced chain head
-
-		headCh = make(chan ChainHeadEvent)
-		sub    = chain.SubscribeChainHeadEvent(headCh)
+		stop   chan struct{} // Non-nil if background routine is active
+		done   chan struct{} // Non-nil if background routine is active
+		headCh = indexer.headCh
 	)
-	defer sub.Unsubscribe()
 
 	// Validate the transaction indexes and repair if necessary
+	head := indexer.head.Load()
 	indexer.repair(head)
 
 	// Launch the initial processing if chain is not empty (head != genesis).
@@ -224,17 +257,18 @@ func (indexer *txIndexer) loop(chain *BlockChain) {
 	for {
 		select {
 		case h := <-headCh:
+			indexer.head.Store(h.Header.Number.Uint64())
 			if done == nil {
 				stop = make(chan struct{})
 				done = make(chan struct{})
 				go indexer.run(h.Header.Number.Uint64(), stop, done)
 			}
-			head = h.Header.Number.Uint64()
+
 		case <-done:
 			stop = nil
 			done = nil
-		case ch := <-indexer.progress:
-			ch <- indexer.report(head)
+			indexer.tail.Store(rawdb.ReadTxIndexTail(indexer.db))
+
 		case ch := <-indexer.term:
 			if stop != nil {
 				close(stop)
@@ -250,7 +284,7 @@ func (indexer *txIndexer) loop(chain *BlockChain) {
 }
 
 // report returns the tx indexing progress.
-func (indexer *txIndexer) report(head uint64) TxIndexProgress {
+func (indexer *txIndexer) report(head uint64, tail *uint64) TxIndexProgress {
 	// Special case if the head is even below the cutoff,
 	// nothing to index.
 	if head < indexer.cutoff {
@@ -270,7 +304,6 @@ func (indexer *txIndexer) report(head uint64) TxIndexProgress {
 	}
 	// Compute how many blocks have been indexed
 	var indexed uint64
-	tail := rawdb.ReadTxIndexTail(indexer.db)
 	if tail != nil {
 		indexed = head - *tail + 1
 	}
@@ -286,16 +319,12 @@ func (indexer *txIndexer) report(head uint64) TxIndexProgress {
 	}
 }
 
-// txIndexProgress retrieves the tx indexing progress, or an error if the
-// background tx indexer is already stopped.
-func (indexer *txIndexer) txIndexProgress() (TxIndexProgress, error) {
-	ch := make(chan TxIndexProgress, 1)
-	select {
-	case indexer.progress <- ch:
-		return <-ch, nil
-	case <-indexer.closed:
-		return TxIndexProgress{}, errors.New("indexer is closed")
-	}
+// txIndexProgress retrieves the transaction indexing progress. The reported
+// progress may slightly lag behind the actual indexing state, as the tail is
+// only updated at the end of each indexing operation. However, this delay is
+// considered acceptable.
+func (indexer *txIndexer) txIndexProgress() TxIndexProgress {
+	return indexer.report(indexer.head.Load(), indexer.tail.Load())
 }
 
 // close shutdown the indexer. Safe to be called for multiple times.

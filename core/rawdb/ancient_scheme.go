@@ -35,6 +35,23 @@ const (
 
 	// ChainFreezerReceiptTable indicates the name of the freezer receipts table.
 	ChainFreezerReceiptTable = "receipts"
+
+	// ChainFreezerBALTable indicates the name of the freezer block access list
+	// table introduced by EIP-7928.
+	ChainFreezerBALTable = "bals"
+)
+
+// Identifiers of tail groups used by the chain freezer.
+const (
+	// ChainFreezerBlockDataGroup is the tail group shared by the body and
+	// receipt tables. The two tables are pruned together and therefore have
+	// the same tail position.
+	ChainFreezerBlockDataGroup = "blockdata"
+
+	// ChainFreezerBALGroup is the tail group for the block access list table.
+	// BAL is only populated after EIP-7928 activates, so it generally has a
+	// higher tail than the block-data group and is pruned independently.
+	ChainFreezerBALGroup = "bal"
 )
 
 // chainFreezerTableConfigs configures the settings for tables in the chain freezer.
@@ -42,16 +59,23 @@ const (
 // tail truncation is disabled for the header and hash tables, as these are intended
 // to be retained long-term.
 var chainFreezerTableConfigs = map[string]freezerTableConfig{
-	ChainFreezerHeaderTable:  {noSnappy: false, prunable: false},
-	ChainFreezerHashTable:    {noSnappy: true, prunable: false},
-	ChainFreezerBodiesTable:  {noSnappy: false, prunable: true},
-	ChainFreezerReceiptTable: {noSnappy: false, prunable: true},
+	ChainFreezerHeaderTable:  {noSnappy: false},
+	ChainFreezerHashTable:    {noSnappy: true},
+	ChainFreezerBodiesTable:  {noSnappy: false, tailGroup: ChainFreezerBlockDataGroup},
+	ChainFreezerReceiptTable: {noSnappy: false, tailGroup: ChainFreezerBlockDataGroup},
+	ChainFreezerBALTable:     {noSnappy: false, tailGroup: ChainFreezerBALGroup},
 }
 
 // freezerTableConfig contains the settings for a freezer table.
 type freezerTableConfig struct {
-	noSnappy bool // disables item compression
-	prunable bool // true for tables that can be pruned by TruncateTail
+	// noSnappy disables item compression when true.
+	noSnappy bool
+
+	// tailGroup names a logical group of tables that share the same tail
+	// position. Tables in the same group are pruned together and must agree
+	// on their tail. An empty value means the table is not prunable; its
+	// tail is always 0.
+	tailGroup string
 }
 
 const (
@@ -66,24 +90,51 @@ const (
 	stateHistoryStorageData  = "storage.data"
 )
 
+// DefaultHistoryGroup is the tail group shared by all state/trienode history
+// tables with tail pruning enabled.
+const DefaultHistoryGroup = "history"
+
 // stateFreezerTableConfigs configures the settings for tables in the state freezer.
 var stateFreezerTableConfigs = map[string]freezerTableConfig{
-	stateHistoryMeta:         {noSnappy: true, prunable: true},
-	stateHistoryAccountIndex: {noSnappy: false, prunable: true},
-	stateHistoryStorageIndex: {noSnappy: false, prunable: true},
-	stateHistoryAccountData:  {noSnappy: false, prunable: true},
-	stateHistoryStorageData:  {noSnappy: false, prunable: true},
+	stateHistoryMeta:         {noSnappy: true, tailGroup: DefaultHistoryGroup},
+	stateHistoryAccountIndex: {noSnappy: false, tailGroup: DefaultHistoryGroup},
+	stateHistoryStorageIndex: {noSnappy: false, tailGroup: DefaultHistoryGroup},
+	stateHistoryAccountData:  {noSnappy: false, tailGroup: DefaultHistoryGroup},
+	stateHistoryStorageData:  {noSnappy: false, tailGroup: DefaultHistoryGroup},
+}
+
+const (
+	trienodeHistoryHeaderTable       = "trienode.header"
+	trienodeHistoryKeySectionTable   = "trienode.key"
+	trienodeHistoryValueSectionTable = "trienode.value"
+)
+
+// trienodeFreezerTableConfigs configures the settings for tables in the trienode freezer.
+var trienodeFreezerTableConfigs = map[string]freezerTableConfig{
+	trienodeHistoryHeaderTable: {noSnappy: false, tailGroup: DefaultHistoryGroup},
+
+	// Disable snappy compression to allow efficient partial read.
+	trienodeHistoryKeySectionTable: {noSnappy: true, tailGroup: DefaultHistoryGroup},
+
+	// Disable snappy compression to allow efficient partial read.
+	trienodeHistoryValueSectionTable: {noSnappy: true, tailGroup: DefaultHistoryGroup},
 }
 
 // The list of identifiers of ancient stores.
 var (
-	ChainFreezerName       = "chain"        // the folder name of chain segment ancient store.
-	MerkleStateFreezerName = "state"        // the folder name of state history ancient store.
-	VerkleStateFreezerName = "state_verkle" // the folder name of state history ancient store.
+	ChainFreezerName          = "chain"           // the folder name of chain segment ancient store.
+	MerkleStateFreezerName    = "state"           // the folder name of state history ancient store.
+	VerkleStateFreezerName    = "state_verkle"    // the folder name of state history ancient store.
+	MerkleTrienodeFreezerName = "trienode"        // the folder name of trienode history ancient store.
+	VerkleTrienodeFreezerName = "trienode_verkle" // the folder name of trienode history ancient store.
 )
 
 // freezers the collections of all builtin freezers.
-var freezers = []string{ChainFreezerName, MerkleStateFreezerName, VerkleStateFreezerName}
+var freezers = []string{
+	ChainFreezerName,
+	MerkleStateFreezerName, VerkleStateFreezerName,
+	MerkleTrienodeFreezerName, VerkleTrienodeFreezerName,
+}
 
 // NewStateFreezer initializes the ancient store for state history.
 //
@@ -102,4 +153,23 @@ func NewStateFreezer(ancientDir string, verkle bool, readOnly bool) (ethdb.Reset
 		name = filepath.Join(ancientDir, MerkleStateFreezerName)
 	}
 	return newResettableFreezer(name, "eth/db/state", readOnly, stateHistoryTableSize, stateFreezerTableConfigs)
+}
+
+// NewTrienodeFreezer initializes the ancient store for trienode history.
+//
+//   - if the empty directory is given, initializes the pure in-memory
+//     trienode freezer (e.g. dev mode).
+//   - if non-empty directory is given, initializes the regular file-based
+//     trienode freezer.
+func NewTrienodeFreezer(ancientDir string, verkle bool, readOnly bool) (ethdb.ResettableAncientStore, error) {
+	if ancientDir == "" {
+		return NewMemoryFreezer(readOnly, trienodeFreezerTableConfigs), nil
+	}
+	var name string
+	if verkle {
+		name = filepath.Join(ancientDir, VerkleTrienodeFreezerName)
+	} else {
+		name = filepath.Join(ancientDir, MerkleTrienodeFreezerName)
+	}
+	return newResettableFreezer(name, "eth/db/trienode", readOnly, stateHistoryTableSize, trienodeFreezerTableConfigs)
 }

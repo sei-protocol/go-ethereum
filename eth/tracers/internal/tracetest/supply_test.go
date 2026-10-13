@@ -72,19 +72,23 @@ func TestSupplyOmittedFields(t *testing.T) {
 		config = *params.MergedTestChainConfig
 		gspec  = &core.Genesis{
 			Config: &config,
+			// The config is merged up to the latest fork, so the system contracts
+			// it calls into have to be deployed. They hold no balance, so the
+			// traced supply is unaffected.
+			Alloc: core.SystemContractAllocs(),
 		}
 	)
 
 	out, _, err := testSupplyTracer(t, gspec, func(b *core.BlockGen) {
 		b.SetPoS()
-	})
+	}, 1)
 	if err != nil {
 		t.Fatalf("failed to test supply tracer: %v", err)
 	}
 
 	expected := supplyInfo{
 		Number:     0,
-		Hash:       common.HexToHash("0x3055fc27d6b4a08eb07033a0d1ee755a4b2988086f28a6189eac1b507525eeb1"),
+		Hash:       common.HexToHash("0x15b41f6dfb24667e4b631d45f847b7afcc63fa2abbc95692bb8bf0ac0c0e35ef"),
 		ParentHash: common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000000"),
 	}
 	actual := out[expected.Number]
@@ -120,7 +124,7 @@ func TestSupplyGenesisAlloc(t *testing.T) {
 		ParentHash: common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000000"),
 	}
 
-	out, _, err := testSupplyTracer(t, gspec, emptyBlockGenerationFunc)
+	out, _, err := testSupplyTracer(t, gspec, emptyBlockGenerationFunc, 1)
 	if err != nil {
 		t.Fatalf("failed to test supply tracer: %v", err)
 	}
@@ -131,135 +135,184 @@ func TestSupplyGenesisAlloc(t *testing.T) {
 }
 
 func TestSupplyRewards(t *testing.T) {
-	t.Skip()
-	// var (
-	// 	config = *params.AllEthashProtocolChanges
+	var (
+		config = *params.AllEthashProtocolChanges
 
-	// 	gspec = &core.Genesis{
-	// 		Config: &config,
-	// 	}
-	// )
+		gspec = &core.Genesis{
+			Config: &config,
+		}
+	)
 
-	// expected := supplyInfo{
-	// 	Issuance: &supplyInfoIssuance{
-	// 		Reward: (*hexutil.Big)(new(big.Int).Mul(common.Big2, big.NewInt(params.Ether))),
-	// 	},
-	// 	Number:     1,
-	// 	Hash:       common.HexToHash("0xcbb08370505be503dafedc4e96d139ea27aba3cbc580148568b8a307b3f51052"),
-	// 	ParentHash: common.HexToHash("0xadeda0a83e337b6c073e3f0e9a17531a04009b397a9588c093b628f21b8bc5a3"),
-	// }
+	expected := supplyInfo{
+		Issuance: &supplyInfoIssuance{
+			Reward: (*hexutil.Big)(new(big.Int).Mul(common.Big2, big.NewInt(params.Ether))),
+		},
+		Number:     1,
+		Hash:       common.HexToHash("0xcbb08370505be503dafedc4e96d139ea27aba3cbc580148568b8a307b3f51052"),
+		ParentHash: common.HexToHash("0xadeda0a83e337b6c073e3f0e9a17531a04009b397a9588c093b628f21b8bc5a3"),
+	}
 
-	// out, _, err := testSupplyTracer(t, gspec, emptyBlockGenerationFunc)
-	// if err != nil {
-	// 	t.Fatalf("failed to test supply tracer: %v", err)
-	// }
+	out, _, err := testSupplyTracer(t, gspec, emptyBlockGenerationFunc, 1)
+	if err != nil {
+		t.Fatalf("failed to test supply tracer: %v", err)
+	}
 
-	// actual := out[expected.Number]
+	actual := out[expected.Number]
 
-	// compareAsJSON(t, expected, actual)
+	compareAsJSON(t, expected, actual)
+}
+
+func TestSupplyRewardsWithUncle(t *testing.T) {
+	var (
+		config = *params.AllEthashProtocolChanges
+
+		gspec = &core.Genesis{
+			Config: &config,
+		}
+	)
+
+	// Base reward for the miner
+	baseReward := ethash.ConstantinopleBlockReward.ToBig()
+	// Miner reward for uncle inclusion is 1/32 of the base reward
+	uncleInclusionReward := new(big.Int).Rsh(baseReward, 5)
+	// Uncle miner reward for an uncle that is 1 block behind is 7/8 of the base reward
+	uncleReward := big.NewInt(7)
+	uncleReward.Mul(uncleReward, baseReward).Rsh(uncleReward, 3)
+
+	totalReward := baseReward.Add(baseReward, uncleInclusionReward).Add(baseReward, uncleReward)
+
+	expected := supplyInfo{
+		Issuance: &supplyInfoIssuance{
+			Reward: (*hexutil.Big)(totalReward),
+		},
+		Number:     3,
+		Hash:       common.HexToHash("0x0737d31f8671c18d32b5143833cfa600e4264df62324c9de569668c6de9eed6d"),
+		ParentHash: common.HexToHash("0x45af6557df87719cb3c7e6f8a98b61508ea74a797733191aececb4c2ec802447"),
+	}
+
+	// Generate a new chain where block 3 includes an uncle
+	uncleGenerationFunc := func(b *core.BlockGen) {
+		if b.Number().Uint64() == 3 {
+			prevBlock := b.PrevBlock(1) // Block 2
+			uncle := types.CopyHeader(prevBlock.Header())
+			uncle.Extra = []byte("uncle!")
+			b.AddUncle(uncle)
+		}
+	}
+
+	out, _, err := testSupplyTracer(t, gspec, uncleGenerationFunc, 3)
+	if err != nil {
+		t.Fatalf("failed to test supply tracer: %v", err)
+	}
+
+	actual := out[expected.Number]
+
+	compareAsJSON(t, expected, actual)
 }
 
 func TestSupplyEip1559Burn(t *testing.T) {
-	t.Skip()
-	// var (
-	// 	config = *params.AllEthashProtocolChanges
+	var (
+		config = *params.AllEthashProtocolChanges
 
-	// 	aa = common.HexToAddress("0x000000000000000000000000000000000000aaaa")
-	// 	// A sender who makes transactions, has some eth1
-	// 	key1, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
-	// 	addr1   = crypto.PubkeyToAddress(key1.PublicKey)
-	// 	gwei5   = new(big.Int).Mul(big.NewInt(5), big.NewInt(params.GWei))
-	// 	eth1    = new(big.Int).Mul(common.Big1, big.NewInt(params.Ether))
+		aa = common.HexToAddress("0x000000000000000000000000000000000000aaaa")
+		// A sender who makes transactions, has some eth1
+		key1, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
+		addr1   = crypto.PubkeyToAddress(key1.PublicKey)
+		gwei5   = new(big.Int).Mul(big.NewInt(5), big.NewInt(params.GWei))
+		eth1    = new(big.Int).Mul(common.Big1, big.NewInt(params.Ether))
 
-	// 	gspec = &core.Genesis{
-	// 		Config:  &config,
-	// 		BaseFee: big.NewInt(params.InitialBaseFee),
-	// 		Alloc: types.GenesisAlloc{
-	// 			addr1: {Balance: eth1},
-	// 		},
-	// 	}
-	// )
+		gspec = &core.Genesis{
+			Config:  &config,
+			BaseFee: big.NewInt(params.InitialBaseFee),
+			Alloc: types.GenesisAlloc{
+				addr1: {Balance: eth1},
+			},
+		}
+	)
 
-	// signer := types.LatestSigner(gspec.Config)
+	signer := types.LatestSigner(gspec.Config)
 
-	// eip1559BlockGenerationFunc := func(b *core.BlockGen) {
-	// 	txdata := &types.DynamicFeeTx{
-	// 		ChainID:   gspec.Config.ChainID,
-	// 		Nonce:     0,
-	// 		To:        &aa,
-	// 		Gas:       21000,
-	// 		GasFeeCap: gwei5,
-	// 		GasTipCap: big.NewInt(2),
-	// 	}
-	// 	tx := types.NewTx(txdata)
-	// 	tx, _ = types.SignTx(tx, signer, key1)
+	eip1559BlockGenerationFunc := func(b *core.BlockGen) {
+		txdata := &types.DynamicFeeTx{
+			ChainID:   gspec.Config.ChainID,
+			Nonce:     0,
+			To:        &aa,
+			Gas:       21000,
+			GasFeeCap: gwei5,
+			GasTipCap: big.NewInt(2),
+		}
+		tx := types.NewTx(txdata)
+		tx, _ = types.SignTx(tx, signer, key1)
 
-	// 	b.AddTx(tx)
-	// }
+		b.AddTx(tx)
+	}
 
-	// out, chain, err := testSupplyTracer(t, gspec, eip1559BlockGenerationFunc)
-	// if err != nil {
-	// 	t.Fatalf("failed to test supply tracer: %v", err)
-	// }
-	// var (
-	// 	head     = chain.CurrentBlock()
-	// 	reward   = new(big.Int).Mul(common.Big2, big.NewInt(params.Ether))
-	// 	burn     = new(big.Int).Mul(big.NewInt(21000), head.BaseFee)
-	// 	expected = supplyInfo{
-	// 		Issuance: &supplyInfoIssuance{
-	// 			Reward: (*hexutil.Big)(reward),
-	// 		},
-	// 		Burn: &supplyInfoBurn{
-	// 			EIP1559: (*hexutil.Big)(burn),
-	// 		},
-	// 		Number:     1,
-	// 		Hash:       head.Hash(),
-	// 		ParentHash: head.ParentHash,
-	// 	}
-	// )
+	out, chain, err := testSupplyTracer(t, gspec, eip1559BlockGenerationFunc, 1)
+	if err != nil {
+		t.Fatalf("failed to test supply tracer: %v", err)
+	}
+	var (
+		head     = chain.CurrentBlock()
+		reward   = new(big.Int).Mul(common.Big2, big.NewInt(params.Ether))
+		burn     = new(big.Int).Mul(big.NewInt(21000), head.BaseFee)
+		expected = supplyInfo{
+			Issuance: &supplyInfoIssuance{
+				Reward: (*hexutil.Big)(reward),
+			},
+			Burn: &supplyInfoBurn{
+				EIP1559: (*hexutil.Big)(burn),
+			},
+			Number:     1,
+			Hash:       head.Hash(),
+			ParentHash: head.ParentHash,
+		}
+	)
 
-	// actual := out[expected.Number]
-	// compareAsJSON(t, expected, actual)
+	actual := out[expected.Number]
+	compareAsJSON(t, expected, actual)
 }
 
 func TestSupplyWithdrawals(t *testing.T) {
-	t.Skip()
-	// var (
-	// 	config = *params.MergedTestChainConfig
-	// 	gspec  = &core.Genesis{
-	// 		Config: &config,
-	// 	}
-	// )
+	var (
+		config = *params.MergedTestChainConfig
+		gspec  = &core.Genesis{
+			Config: &config,
+			// The config is merged up to the latest fork, so the system contracts
+			// it calls into have to be deployed. They hold no balance, so the
+			// traced supply is unaffected.
+			Alloc: core.SystemContractAllocs(),
+		}
+	)
 
-	// withdrawalsBlockGenerationFunc := func(b *core.BlockGen) {
-	// 	b.SetPoS()
+	withdrawalsBlockGenerationFunc := func(b *core.BlockGen) {
+		b.SetPoS()
 
-	// 	b.AddWithdrawal(&types.Withdrawal{
-	// 		Validator: 42,
-	// 		Address:   common.Address{0xee},
-	// 		Amount:    1337,
-	// 	})
-	// }
+		b.AddWithdrawal(&types.Withdrawal{
+			Validator: 42,
+			Address:   common.Address{0xee},
+			Amount:    1337,
+		})
+	}
 
-	// out, chain, err := testSupplyTracer(t, gspec, withdrawalsBlockGenerationFunc)
-	// if err != nil {
-	// 	t.Fatalf("failed to test supply tracer: %v", err)
-	// }
+	out, chain, err := testSupplyTracer(t, gspec, withdrawalsBlockGenerationFunc, 1)
+	if err != nil {
+		t.Fatalf("failed to test supply tracer: %v", err)
+	}
 
-	// var (
-	// 	head     = chain.CurrentBlock()
-	// 	expected = supplyInfo{
-	// 		Issuance: &supplyInfoIssuance{
-	// 			Withdrawals: (*hexutil.Big)(big.NewInt(1337000000000)),
-	// 		},
-	// 		Number:     1,
-	// 		Hash:       head.Hash(),
-	// 		ParentHash: head.ParentHash,
-	// 	}
-	// 	actual = out[expected.Number]
-	// )
+	var (
+		head     = chain.CurrentBlock()
+		expected = supplyInfo{
+			Issuance: &supplyInfoIssuance{
+				Withdrawals: (*hexutil.Big)(big.NewInt(1337000000000)),
+			},
+			Number:     1,
+			Hash:       head.Hash(),
+			ParentHash: head.ParentHash,
+		}
+		actual = out[expected.Number]
+	)
 
-	// compareAsJSON(t, expected, actual)
+	compareAsJSON(t, expected, actual)
 }
 
 // Tests fund retrieval after contract's selfdestruct.
@@ -268,136 +321,135 @@ func TestSupplyWithdrawals(t *testing.T) {
 // Because Contract B is removed only at the end of the transaction
 // the ether sent in between is burnt before Cancun hard fork.
 func TestSupplySelfdestruct(t *testing.T) {
-	t.Skip()
-	// var (
-	// 	config = *params.TestChainConfig
+	var (
+		config = *params.TestChainConfig
 
-	// 	aa      = common.HexToAddress("0x1111111111111111111111111111111111111111")
-	// 	bb      = common.HexToAddress("0x2222222222222222222222222222222222222222")
-	// 	dad     = common.HexToAddress("0x0000000000000000000000000000000000000dad")
-	// 	key1, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
-	// 	addr1   = crypto.PubkeyToAddress(key1.PublicKey)
-	// 	gwei5   = new(big.Int).Mul(big.NewInt(5), big.NewInt(params.GWei))
-	// 	eth1    = new(big.Int).Mul(common.Big1, big.NewInt(params.Ether))
+		aa      = common.HexToAddress("0x1111111111111111111111111111111111111111")
+		bb      = common.HexToAddress("0x2222222222222222222222222222222222222222")
+		dad     = common.HexToAddress("0x0000000000000000000000000000000000000dad")
+		key1, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
+		addr1   = crypto.PubkeyToAddress(key1.PublicKey)
+		gwei5   = new(big.Int).Mul(big.NewInt(5), big.NewInt(params.GWei))
+		eth1    = new(big.Int).Mul(common.Big1, big.NewInt(params.Ether))
 
-	// 	gspec = &core.Genesis{
-	// 		Config:  &config,
-	// 		BaseFee: big.NewInt(params.InitialBaseFee),
-	// 		Alloc: types.GenesisAlloc{
-	// 			addr1: {Balance: eth1},
-	// 			aa: {
-	// 				Code: common.FromHex("0x61face60f01b6000527322222222222222222222222222222222222222226000806002600080855af160008103603457600080fd5b60008060008034865af1905060008103604c57600080fd5b5050"),
-	// 				// Nonce:   0,
-	// 				Balance: big.NewInt(0),
-	// 			},
-	// 			bb: {
-	// 				Code:    common.FromHex("0x6000357fface000000000000000000000000000000000000000000000000000000000000808203602f57610dad80ff5b5050"),
-	// 				Nonce:   0,
-	// 				Balance: eth1,
-	// 			},
-	// 		},
-	// 	}
-	// )
+		gspec = &core.Genesis{
+			Config:  &config,
+			BaseFee: big.NewInt(params.InitialBaseFee),
+			Alloc: types.GenesisAlloc{
+				addr1: {Balance: eth1},
+				aa: {
+					Code: common.FromHex("0x61face60f01b6000527322222222222222222222222222222222222222226000806002600080855af160008103603457600080fd5b60008060008034865af1905060008103604c57600080fd5b5050"),
+					// Nonce:   0,
+					Balance: big.NewInt(0),
+				},
+				bb: {
+					Code:    common.FromHex("0x6000357fface000000000000000000000000000000000000000000000000000000000000808203602f57610dad80ff5b5050"),
+					Nonce:   0,
+					Balance: eth1,
+				},
+			},
+		}
+	)
 
-	// gspec.Config.TerminalTotalDifficulty = big.NewInt(0)
+	gspec.Config.TerminalTotalDifficulty = big.NewInt(0)
 
-	// signer := types.LatestSigner(gspec.Config)
+	signer := types.LatestSigner(gspec.Config)
 
-	// testBlockGenerationFunc := func(b *core.BlockGen) {
-	// 	b.SetPoS()
+	testBlockGenerationFunc := func(b *core.BlockGen) {
+		b.SetPoS()
 
-	// 	txdata := &types.LegacyTx{
-	// 		Nonce:    0,
-	// 		To:       &aa,
-	// 		Value:    gwei5,
-	// 		Gas:      150000,
-	// 		GasPrice: gwei5,
-	// 		Data:     []byte{},
-	// 	}
+		txdata := &types.LegacyTx{
+			Nonce:    0,
+			To:       &aa,
+			Value:    gwei5,
+			Gas:      150000,
+			GasPrice: gwei5,
+			Data:     []byte{},
+		}
 
-	// 	tx := types.NewTx(txdata)
-	// 	tx, _ = types.SignTx(tx, signer, key1)
+		tx := types.NewTx(txdata)
+		tx, _ = types.SignTx(tx, signer, key1)
 
-	// 	b.AddTx(tx)
-	// }
+		b.AddTx(tx)
+	}
 
-	// // 1. Test pre Cancun
-	// preCancunOutput, preCancunChain, err := testSupplyTracer(t, gspec, testBlockGenerationFunc)
-	// if err != nil {
-	// 	t.Fatalf("Pre-cancun failed to test supply tracer: %v", err)
-	// }
+	// 1. Test pre Cancun
+	preCancunOutput, preCancunChain, err := testSupplyTracer(t, gspec, testBlockGenerationFunc, 1)
+	if err != nil {
+		t.Fatalf("Pre-cancun failed to test supply tracer: %v", err)
+	}
 
-	// // Check balance at state:
-	// // 1. 0x0000...000dad has 1 ether
-	// // 2. A has 0 ether
-	// // 3. B has 0 ether
-	// statedb, _ := preCancunChain.State()
-	// if got, exp := statedb.GetBalance(dad), eth1; got.CmpBig(exp) != 0 {
-	// 	t.Fatalf("Pre-cancun address \"%v\" balance, got %v exp %v\n", dad, got, exp)
-	// }
-	// if got, exp := statedb.GetBalance(aa), big.NewInt(0); got.CmpBig(exp) != 0 {
-	// 	t.Fatalf("Pre-cancun address \"%v\" balance, got %v exp %v\n", aa, got, exp)
-	// }
-	// if got, exp := statedb.GetBalance(bb), big.NewInt(0); got.CmpBig(exp) != 0 {
-	// 	t.Fatalf("Pre-cancun address \"%v\" balance, got %v exp %v\n", bb, got, exp)
-	// }
+	// Check balance at state:
+	// 1. 0x0000...000dad has 1 ether
+	// 2. A has 0 ether
+	// 3. B has 0 ether
+	statedb, _ := preCancunChain.State()
+	if got, exp := statedb.GetBalance(dad), eth1; got.CmpBig(exp) != 0 {
+		t.Fatalf("Pre-cancun address \"%v\" balance, got %v exp %v\n", dad, got, exp)
+	}
+	if got, exp := statedb.GetBalance(aa), big.NewInt(0); got.CmpBig(exp) != 0 {
+		t.Fatalf("Pre-cancun address \"%v\" balance, got %v exp %v\n", aa, got, exp)
+	}
+	if got, exp := statedb.GetBalance(bb), big.NewInt(0); got.CmpBig(exp) != 0 {
+		t.Fatalf("Pre-cancun address \"%v\" balance, got %v exp %v\n", bb, got, exp)
+	}
 
-	// head := preCancunChain.CurrentBlock()
-	// // Check live trace output
-	// expected := supplyInfo{
-	// 	Burn: &supplyInfoBurn{
-	// 		EIP1559: (*hexutil.Big)(big.NewInt(55289500000000)),
-	// 		Misc:    (*hexutil.Big)(big.NewInt(5000000000)),
-	// 	},
-	// 	Number:     1,
-	// 	Hash:       head.Hash(),
-	// 	ParentHash: head.ParentHash,
-	// }
+	head := preCancunChain.CurrentBlock()
+	// Check live trace output
+	expected := supplyInfo{
+		Burn: &supplyInfoBurn{
+			EIP1559: (*hexutil.Big)(big.NewInt(55289500000000)),
+			Misc:    (*hexutil.Big)(big.NewInt(5000000000)),
+		},
+		Number:     1,
+		Hash:       head.Hash(),
+		ParentHash: head.ParentHash,
+	}
 
-	// actual := preCancunOutput[expected.Number]
+	actual := preCancunOutput[expected.Number]
 
-	// compareAsJSON(t, expected, actual)
+	compareAsJSON(t, expected, actual)
 
-	// // 2. Test post Cancun
-	// cancunTime := uint64(0)
-	// gspec.Config.ShanghaiTime = &cancunTime
-	// gspec.Config.CancunTime = &cancunTime
-	// gspec.Config.BlobScheduleConfig = params.DefaultBlobSchedule
+	// 2. Test post Cancun
+	cancunTime := uint64(0)
+	gspec.Config.ShanghaiTime = &cancunTime
+	gspec.Config.CancunTime = &cancunTime
+	gspec.Config.BlobScheduleConfig = params.DefaultBlobSchedule
 
-	// postCancunOutput, postCancunChain, err := testSupplyTracer(t, gspec, testBlockGenerationFunc)
-	// if err != nil {
-	// 	t.Fatalf("Post-cancun failed to test supply tracer: %v", err)
-	// }
+	postCancunOutput, postCancunChain, err := testSupplyTracer(t, gspec, testBlockGenerationFunc, 1)
+	if err != nil {
+		t.Fatalf("Post-cancun failed to test supply tracer: %v", err)
+	}
 
-	// // Check balance at state:
-	// // 1. 0x0000...000dad has 1 ether
-	// // 3. A has 0 ether
-	// // 3. B has 5 gwei
-	// statedb, _ = postCancunChain.State()
-	// if got, exp := statedb.GetBalance(dad), eth1; got.CmpBig(exp) != 0 {
-	// 	t.Fatalf("Post-shanghai address \"%v\" balance, got %v exp %v\n", dad, got, exp)
-	// }
-	// if got, exp := statedb.GetBalance(aa), big.NewInt(0); got.CmpBig(exp) != 0 {
-	// 	t.Fatalf("Post-shanghai address \"%v\" balance, got %v exp %v\n", aa, got, exp)
-	// }
-	// if got, exp := statedb.GetBalance(bb), gwei5; got.CmpBig(exp) != 0 {
-	// 	t.Fatalf("Post-shanghai address \"%v\" balance, got %v exp %v\n", bb, got, exp)
-	// }
+	// Check balance at state:
+	// 1. 0x0000...000dad has 1 ether
+	// 3. A has 0 ether
+	// 3. B has 5 gwei
+	statedb, _ = postCancunChain.State()
+	if got, exp := statedb.GetBalance(dad), eth1; got.CmpBig(exp) != 0 {
+		t.Fatalf("Post-shanghai address \"%v\" balance, got %v exp %v\n", dad, got, exp)
+	}
+	if got, exp := statedb.GetBalance(aa), big.NewInt(0); got.CmpBig(exp) != 0 {
+		t.Fatalf("Post-shanghai address \"%v\" balance, got %v exp %v\n", aa, got, exp)
+	}
+	if got, exp := statedb.GetBalance(bb), gwei5; got.CmpBig(exp) != 0 {
+		t.Fatalf("Post-shanghai address \"%v\" balance, got %v exp %v\n", bb, got, exp)
+	}
 
-	// // Check live trace output
-	// head = postCancunChain.CurrentBlock()
-	// expected = supplyInfo{
-	// 	Burn: &supplyInfoBurn{
-	// 		EIP1559: (*hexutil.Big)(big.NewInt(55289500000000)),
-	// 	},
-	// 	Number:     1,
-	// 	Hash:       head.Hash(),
-	// 	ParentHash: head.ParentHash,
-	// }
+	// Check live trace output
+	head = postCancunChain.CurrentBlock()
+	expected = supplyInfo{
+		Burn: &supplyInfoBurn{
+			EIP1559: (*hexutil.Big)(big.NewInt(55289500000000)),
+		},
+		Number:     1,
+		Hash:       head.Hash(),
+		ParentHash: head.ParentHash,
+	}
 
-	// actual = postCancunOutput[expected.Number]
+	actual = postCancunOutput[expected.Number]
 
-	// compareAsJSON(t, expected, actual)
+	compareAsJSON(t, expected, actual)
 }
 
 // Tests selfdestructing contract to send its balance to itself (burn).
@@ -408,146 +460,145 @@ func TestSupplySelfdestruct(t *testing.T) {
 //   - Contract D calls C and reverts (Burn amount of C
 //     has to be reverted as well).
 func TestSupplySelfdestructItselfAndRevert(t *testing.T) {
-	t.Skip()
-	// var (
-	// 	config = *params.TestChainConfig
+	var (
+		config = *params.TestChainConfig
 
-	// 	aa      = common.HexToAddress("0x1111111111111111111111111111111111111111")
-	// 	bb      = common.HexToAddress("0x2222222222222222222222222222222222222222")
-	// 	cc      = common.HexToAddress("0x3333333333333333333333333333333333333333")
-	// 	dd      = common.HexToAddress("0x4444444444444444444444444444444444444444")
-	// 	key1, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
-	// 	addr1   = crypto.PubkeyToAddress(key1.PublicKey)
-	// 	gwei5   = new(big.Int).Mul(big.NewInt(5), big.NewInt(params.GWei))
-	// 	eth1    = new(big.Int).Mul(common.Big1, big.NewInt(params.Ether))
-	// 	eth2    = new(big.Int).Mul(common.Big2, big.NewInt(params.Ether))
-	// 	eth5    = new(big.Int).Mul(big.NewInt(5), big.NewInt(params.Ether))
+		aa      = common.HexToAddress("0x1111111111111111111111111111111111111111")
+		bb      = common.HexToAddress("0x2222222222222222222222222222222222222222")
+		cc      = common.HexToAddress("0x3333333333333333333333333333333333333333")
+		dd      = common.HexToAddress("0x4444444444444444444444444444444444444444")
+		key1, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
+		addr1   = crypto.PubkeyToAddress(key1.PublicKey)
+		gwei5   = new(big.Int).Mul(big.NewInt(5), big.NewInt(params.GWei))
+		eth1    = new(big.Int).Mul(common.Big1, big.NewInt(params.Ether))
+		eth2    = new(big.Int).Mul(common.Big2, big.NewInt(params.Ether))
+		eth5    = new(big.Int).Mul(big.NewInt(5), big.NewInt(params.Ether))
 
-	// 	gspec = &core.Genesis{
-	// 		Config: &config,
-	// 		// BaseFee: big.NewInt(params.InitialBaseFee),
-	// 		Alloc: types.GenesisAlloc{
-	// 			addr1: {Balance: eth1},
-	// 			aa: {
-	// 				// Contract code in YUL:
-	// 				//
-	// 				// object "ContractA" {
-	// 				// 	code {
-	// 				// 			let B := 0x2222222222222222222222222222222222222222
-	// 				// 			let D := 0x4444444444444444444444444444444444444444
+		gspec = &core.Genesis{
+			Config: &config,
+			// BaseFee: big.NewInt(params.InitialBaseFee),
+			Alloc: types.GenesisAlloc{
+				addr1: {Balance: eth1},
+				aa: {
+					// Contract code in YUL:
+					//
+					// object "ContractA" {
+					// 	code {
+					// 			let B := 0x2222222222222222222222222222222222222222
+					// 			let D := 0x4444444444444444444444444444444444444444
 
-	// 				// 			// Call to Contract B
-	// 				// 			let resB:= call(gas(), B, 0, 0x0, 0x0, 0, 0)
+					// 			// Call to Contract B
+					// 			let resB:= call(gas(), B, 0, 0x0, 0x0, 0, 0)
 
-	// 				// 			// Call to Contract D
-	// 				// 			let resD := call(gas(), D, 0, 0x0, 0x0, 0, 0)
-	// 				// 	}
-	// 				// }
-	// 				Code:    common.FromHex("0x73222222222222222222222222222222222222222273444444444444444444444444444444444444444460006000600060006000865af160006000600060006000865af150505050"),
-	// 				Balance: common.Big0,
-	// 			},
-	// 			bb: {
-	// 				// Contract code in YUL:
-	// 				//
-	// 				// object "ContractB" {
-	// 				// 	code {
-	// 				// 			let self := address()
-	// 				// 			selfdestruct(self)
-	// 				// 	}
-	// 				// }
-	// 				Code:    common.FromHex("0x3080ff50"),
-	// 				Balance: eth5,
-	// 			},
-	// 			cc: {
-	// 				Code:    common.FromHex("0x3080ff50"),
-	// 				Balance: eth1,
-	// 			},
-	// 			dd: {
-	// 				// Contract code in YUL:
-	// 				//
-	// 				// object "ContractD" {
-	// 				// 	code {
-	// 				// 			let C := 0x3333333333333333333333333333333333333333
+					// 			// Call to Contract D
+					// 			let resD := call(gas(), D, 0, 0x0, 0x0, 0, 0)
+					// 	}
+					// }
+					Code:    common.FromHex("0x73222222222222222222222222222222222222222273444444444444444444444444444444444444444460006000600060006000865af160006000600060006000865af150505050"),
+					Balance: common.Big0,
+				},
+				bb: {
+					// Contract code in YUL:
+					//
+					// object "ContractB" {
+					// 	code {
+					// 			let self := address()
+					// 			selfdestruct(self)
+					// 	}
+					// }
+					Code:    common.FromHex("0x3080ff50"),
+					Balance: eth5,
+				},
+				cc: {
+					Code:    common.FromHex("0x3080ff50"),
+					Balance: eth1,
+				},
+				dd: {
+					// Contract code in YUL:
+					//
+					// object "ContractD" {
+					// 	code {
+					// 			let C := 0x3333333333333333333333333333333333333333
 
-	// 				// 			// Call to Contract C
-	// 				// 			let resC := call(gas(), C, 0, 0x0, 0x0, 0, 0)
+					// 			// Call to Contract C
+					// 			let resC := call(gas(), C, 0, 0x0, 0x0, 0, 0)
 
-	// 				// 			// Revert
-	// 				// 			revert(0, 0)
-	// 				// 	}
-	// 				// }
-	// 				Code:    common.FromHex("0x73333333333333333333333333333333333333333360006000600060006000855af160006000fd5050"),
-	// 				Balance: eth2,
-	// 			},
-	// 		},
-	// 	}
-	// )
+					// 			// Revert
+					// 			revert(0, 0)
+					// 	}
+					// }
+					Code:    common.FromHex("0x73333333333333333333333333333333333333333360006000600060006000855af160006000fd5050"),
+					Balance: eth2,
+				},
+			},
+		}
+	)
 
-	// gspec.Config.TerminalTotalDifficulty = big.NewInt(0)
+	gspec.Config.TerminalTotalDifficulty = big.NewInt(0)
 
-	// signer := types.LatestSigner(gspec.Config)
+	signer := types.LatestSigner(gspec.Config)
 
-	// testBlockGenerationFunc := func(b *core.BlockGen) {
-	// 	b.SetPoS()
+	testBlockGenerationFunc := func(b *core.BlockGen) {
+		b.SetPoS()
 
-	// 	txdata := &types.LegacyTx{
-	// 		Nonce:    0,
-	// 		To:       &aa,
-	// 		Value:    common.Big0,
-	// 		Gas:      150000,
-	// 		GasPrice: gwei5,
-	// 		Data:     []byte{},
-	// 	}
+		txdata := &types.LegacyTx{
+			Nonce:    0,
+			To:       &aa,
+			Value:    common.Big0,
+			Gas:      150000,
+			GasPrice: gwei5,
+			Data:     []byte{},
+		}
 
-	// 	tx := types.NewTx(txdata)
-	// 	tx, _ = types.SignTx(tx, signer, key1)
+		tx := types.NewTx(txdata)
+		tx, _ = types.SignTx(tx, signer, key1)
 
-	// 	b.AddTx(tx)
-	// }
+		b.AddTx(tx)
+	}
 
-	// output, chain, err := testSupplyTracer(t, gspec, testBlockGenerationFunc)
-	// if err != nil {
-	// 	t.Fatalf("failed to test supply tracer: %v", err)
-	// }
+	output, chain, err := testSupplyTracer(t, gspec, testBlockGenerationFunc, 1)
+	if err != nil {
+		t.Fatalf("failed to test supply tracer: %v", err)
+	}
 
-	// // Check balance at state:
-	// // 1. A has 0 ether
-	// // 2. B has 0 ether, burned
-	// // 3. C has 2 ether, selfdestructed but parent D reverted
-	// // 4. D has 1 ether, reverted
-	// statedb, _ := chain.State()
-	// if got, exp := statedb.GetBalance(aa), common.Big0; got.CmpBig(exp) != 0 {
-	// 	t.Fatalf("address \"%v\" balance, got %v exp %v\n", aa, got, exp)
-	// }
-	// if got, exp := statedb.GetBalance(bb), common.Big0; got.CmpBig(exp) != 0 {
-	// 	t.Fatalf("address \"%v\" balance, got %v exp %v\n", bb, got, exp)
-	// }
-	// if got, exp := statedb.GetBalance(cc), eth1; got.CmpBig(exp) != 0 {
-	// 	t.Fatalf("address \"%v\" balance, got %v exp %v\n", bb, got, exp)
-	// }
-	// if got, exp := statedb.GetBalance(dd), eth2; got.CmpBig(exp) != 0 {
-	// 	t.Fatalf("address \"%v\" balance, got %v exp %v\n", bb, got, exp)
-	// }
+	// Check balance at state:
+	// 1. A has 0 ether
+	// 2. B has 0 ether, burned
+	// 3. C has 2 ether, selfdestructed but parent D reverted
+	// 4. D has 1 ether, reverted
+	statedb, _ := chain.State()
+	if got, exp := statedb.GetBalance(aa), common.Big0; got.CmpBig(exp) != 0 {
+		t.Fatalf("address \"%v\" balance, got %v exp %v\n", aa, got, exp)
+	}
+	if got, exp := statedb.GetBalance(bb), common.Big0; got.CmpBig(exp) != 0 {
+		t.Fatalf("address \"%v\" balance, got %v exp %v\n", bb, got, exp)
+	}
+	if got, exp := statedb.GetBalance(cc), eth1; got.CmpBig(exp) != 0 {
+		t.Fatalf("address \"%v\" balance, got %v exp %v\n", bb, got, exp)
+	}
+	if got, exp := statedb.GetBalance(dd), eth2; got.CmpBig(exp) != 0 {
+		t.Fatalf("address \"%v\" balance, got %v exp %v\n", bb, got, exp)
+	}
 
-	// // Check live trace output
-	// block := chain.GetBlockByNumber(1)
+	// Check live trace output
+	block := chain.GetBlockByNumber(1)
 
-	// expected := supplyInfo{
-	// 	Burn: &supplyInfoBurn{
-	// 		EIP1559: (*hexutil.Big)(new(big.Int).Mul(block.BaseFee(), big.NewInt(int64(block.GasUsed())))),
-	// 		Misc:    (*hexutil.Big)(eth5), // 5ETH burned from contract B
-	// 	},
-	// 	Number:     1,
-	// 	Hash:       block.Hash(),
-	// 	ParentHash: block.ParentHash(),
-	// }
+	expected := supplyInfo{
+		Burn: &supplyInfoBurn{
+			EIP1559: (*hexutil.Big)(new(big.Int).Mul(block.BaseFee(), big.NewInt(int64(block.GasUsed())))),
+			Misc:    (*hexutil.Big)(eth5), // 5ETH burned from contract B
+		},
+		Number:     1,
+		Hash:       block.Hash(),
+		ParentHash: block.ParentHash(),
+	}
 
-	// actual := output[expected.Number]
+	actual := output[expected.Number]
 
-	// compareAsJSON(t, expected, actual)
+	compareAsJSON(t, expected, actual)
 }
 
-func testSupplyTracer(t *testing.T, genesis *core.Genesis, gen func(*core.BlockGen)) ([]supplyInfo, *core.BlockChain, error) {
+func testSupplyTracer(t *testing.T, genesis *core.Genesis, gen func(b *core.BlockGen), numBlocks int) ([]supplyInfo, *core.BlockChain, error) {
 	engine := beacon.New(ethash.NewFaker())
 
 	traceOutputPath := filepath.ToSlash(t.TempDir())
@@ -559,13 +610,15 @@ func testSupplyTracer(t *testing.T, genesis *core.Genesis, gen func(*core.BlockG
 		return nil, nil, fmt.Errorf("failed to create call tracer: %v", err)
 	}
 
-	chain, err := core.NewBlockChain(rawdb.NewMemoryDatabase(), core.DefaultCacheConfigWithScheme(rawdb.PathScheme), genesis, nil, engine, vm.Config{Tracer: tracer}, nil)
+	options := core.DefaultConfig().WithStateScheme(rawdb.PathScheme)
+	options.VmConfig = vm.Config{Tracer: tracer}
+	chain, err := core.NewBlockChain(rawdb.NewMemoryDatabase(), genesis, engine, options)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create tester chain: %v", err)
 	}
 	defer chain.Stop()
 
-	_, blocks, _ := core.GenerateChainWithGenesis(genesis, engine, 1, func(i int, b *core.BlockGen) {
+	_, blocks, _ := core.GenerateChainWithGenesis(genesis, engine, numBlocks, func(i int, b *core.BlockGen) {
 		b.SetCoinbase(common.Address{1})
 		gen(b)
 	})

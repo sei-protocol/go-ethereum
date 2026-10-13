@@ -48,17 +48,17 @@ import (
 
 // A BlockTest checks handling of entire blocks.
 type BlockTest struct {
-	Json BtJSON
+	json btJSON
 }
 
 // UnmarshalJSON implements json.Unmarshaler interface.
 func (t *BlockTest) UnmarshalJSON(in []byte) error {
-	return json.Unmarshal(in, &t.Json)
+	return json.Unmarshal(in, &t.json)
 }
 
-type BtJSON struct {
-	Blocks     []BtBlock             `json:"blocks"`
-	Genesis    BtHeader              `json:"genesisBlockHeader"`
+type btJSON struct {
+	Blocks     []btBlock             `json:"blocks"`
+	Genesis    btHeader              `json:"genesisBlockHeader"`
 	Pre        types.GenesisAlloc    `json:"pre"`
 	Post       types.GenesisAlloc    `json:"postState"`
 	BestBlock  common.UnprefixedHash `json:"lastblockhash"`
@@ -66,16 +66,16 @@ type BtJSON struct {
 	SealEngine string                `json:"sealEngine"`
 }
 
-type BtBlock struct {
-	BlockHeader     *BtHeader
+type btBlock struct {
+	BlockHeader     *btHeader
 	ExpectException string
 	Rlp             string
-	UncleHeaders    []*BtHeader
+	UncleHeaders    []*btHeader
 }
 
 //go:generate go run github.com/fjl/gencodec -type btHeader -field-override btHeaderMarshaling -out gen_btheader.go
 
-type BtHeader struct {
+type btHeader struct {
 	Bloom                 types.Bloom
 	Coinbase              common.Address
 	MixHash               common.Hash
@@ -97,9 +97,10 @@ type BtHeader struct {
 	BlobGasUsed           *uint64
 	ExcessBlobGas         *uint64
 	ParentBeaconBlockRoot *common.Hash
+	SlotNumber            *uint64
 }
 
-type BtHeaderMarshaling struct {
+type btHeaderMarshaling struct {
 	ExtraData     hexutil.Bytes
 	Number        *math.HexOrDecimal256
 	Difficulty    *math.HexOrDecimal256
@@ -109,57 +110,66 @@ type BtHeaderMarshaling struct {
 	BaseFeePerGas *math.HexOrDecimal256
 	BlobGasUsed   *math.HexOrDecimal64
 	ExcessBlobGas *math.HexOrDecimal64
+	SlotNumber    *math.HexOrDecimal64
 }
 
 func (t *BlockTest) Run(snapshotter bool, scheme string, witness bool, tracer *tracing.Hooks, postCheck func(error, *core.BlockChain)) (result error) {
-	config, ok := Forks[t.Json.Network]
+	config, ok := Forks[t.json.Network]
 	if !ok {
-		return UnsupportedForkError{t.Json.Network}
+		return UnsupportedForkError{t.json.Network}
 	}
+
 	// import pre accounts & construct test genesis block & state root
+	// Commit genesis state
 	var (
+		gspec = t.genesis(config)
 		db    = rawdb.NewMemoryDatabase()
 		tconf = &triedb.Config{
 			Preimages: true,
+			IsUBT:     gspec.Config.UBTTime != nil && *gspec.Config.UBTTime <= gspec.Timestamp,
 		}
 	)
-	if scheme == rawdb.PathScheme {
+	if scheme == rawdb.PathScheme || tconf.IsUBT {
 		tconf.PathDB = pathdb.Defaults
 	} else {
 		tconf.HashDB = hashdb.Defaults
 	}
-	// Commit genesis state
-	gspec := t.genesis(config)
 
 	// if ttd is not specified, set an arbitrary huge value
 	if gspec.Config.TerminalTotalDifficulty == nil {
 		gspec.Config.TerminalTotalDifficulty = big.NewInt(stdmath.MaxInt64)
 	}
 	triedb := triedb.NewDatabase(db, tconf)
-	gblock, err := gspec.Commit(db, triedb)
+	gblock, err := gspec.Commit(db, triedb, nil)
 	if err != nil {
 		return err
 	}
 	triedb.Close() // close the db to prevent memory leak
 
-	if gblock.Hash() != t.Json.Genesis.Hash {
-		return fmt.Errorf("genesis block hash doesn't match test: computed=%x, test=%x", gblock.Hash().Bytes()[:6], t.Json.Genesis.Hash[:6])
+	if gblock.Hash() != t.json.Genesis.Hash {
+		return fmt.Errorf("genesis block hash doesn't match test: computed=%x, test=%x", gblock.Hash().Bytes()[:6], t.json.Genesis.Hash[:6])
 	}
-	if gblock.Root() != t.Json.Genesis.StateRoot {
-		return fmt.Errorf("genesis block state root does not match test: computed=%x, test=%x", gblock.Root().Bytes()[:6], t.Json.Genesis.StateRoot[:6])
+	if gblock.Root() != t.json.Genesis.StateRoot {
+		return fmt.Errorf("genesis block state root does not match test: computed=%x, test=%x", gblock.Root().Bytes()[:6], t.json.Genesis.StateRoot[:6])
 	}
 	// Wrap the original engine within the beacon-engine
 	engine := beacon.New(ethash.NewFaker())
 
-	cache := &core.CacheConfig{TrieCleanLimit: 0, StateScheme: scheme, Preimages: true}
-	if snapshotter {
-		cache.SnapshotLimit = 1
-		cache.SnapshotWait = true
-	}
-	chain, err := core.NewBlockChain(db, cache, gspec, nil, engine, vm.Config{
-		Tracer:                  tracer,
+	options := &core.BlockChainConfig{
+		TrieCleanLimit: 0,
+		StateScheme:    scheme,
+		Preimages:      true,
+		TxLookupLimit:  -1, // disable tx indexing
+		VmConfig: vm.Config{
+			Tracer: tracer,
+		},
 		StatelessSelfValidation: witness,
-	}, nil)
+	}
+	if snapshotter {
+		options.SnapshotLimit = 1
+		options.SnapshotWait = true
+	}
+	chain, err := core.NewBlockChain(db, gspec, engine, options)
 	if err != nil {
 		return err
 	}
@@ -175,8 +185,8 @@ func (t *BlockTest) Run(snapshotter bool, scheme string, witness bool, tracer *t
 		defer postCheck(result, chain)
 	}
 	cmlast := chain.CurrentBlock().Hash()
-	if common.Hash(t.Json.BestBlock) != cmlast {
-		return fmt.Errorf("last block hash validation mismatch: want: %x, have: %x", t.Json.BestBlock, cmlast)
+	if common.Hash(t.json.BestBlock) != cmlast {
+		return fmt.Errorf("last block hash validation mismatch: want: %x, have: %x", t.json.BestBlock, cmlast)
 	}
 	newDB, err := chain.State()
 	if err != nil {
@@ -187,34 +197,42 @@ func (t *BlockTest) Run(snapshotter bool, scheme string, witness bool, tracer *t
 	}
 	// Cross-check the snapshot-to-hash against the trie hash
 	if snapshotter {
-		if err := chain.Snapshots().Verify(chain.CurrentBlock().Root); err != nil {
-			return err
+		if chain.Snapshots() != nil {
+			if err := chain.Snapshots().Verify(chain.CurrentBlock().Root); err != nil {
+				return err
+			}
 		}
 	}
 	return t.validateImportedHeaders(chain, validBlocks)
 }
 
+// Network returns the network/fork name for this test.
+func (t *BlockTest) Network() string {
+	return t.json.Network
+}
+
 func (t *BlockTest) genesis(config *params.ChainConfig) *core.Genesis {
 	return &core.Genesis{
 		Config:        config,
-		Nonce:         t.Json.Genesis.Nonce.Uint64(),
-		Timestamp:     t.Json.Genesis.Timestamp,
-		ParentHash:    t.Json.Genesis.ParentHash,
-		ExtraData:     t.Json.Genesis.ExtraData,
-		GasLimit:      t.Json.Genesis.GasLimit,
-		GasUsed:       t.Json.Genesis.GasUsed,
-		Difficulty:    t.Json.Genesis.Difficulty,
-		Mixhash:       t.Json.Genesis.MixHash,
-		Coinbase:      t.Json.Genesis.Coinbase,
-		Alloc:         t.Json.Pre,
-		BaseFee:       t.Json.Genesis.BaseFeePerGas,
-		BlobGasUsed:   t.Json.Genesis.BlobGasUsed,
-		ExcessBlobGas: t.Json.Genesis.ExcessBlobGas,
+		Nonce:         t.json.Genesis.Nonce.Uint64(),
+		Timestamp:     t.json.Genesis.Timestamp,
+		ParentHash:    t.json.Genesis.ParentHash,
+		ExtraData:     t.json.Genesis.ExtraData,
+		GasLimit:      t.json.Genesis.GasLimit,
+		GasUsed:       t.json.Genesis.GasUsed,
+		Difficulty:    t.json.Genesis.Difficulty,
+		Mixhash:       t.json.Genesis.MixHash,
+		Coinbase:      t.json.Genesis.Coinbase,
+		Alloc:         t.json.Pre,
+		BaseFee:       t.json.Genesis.BaseFeePerGas,
+		BlobGasUsed:   t.json.Genesis.BlobGasUsed,
+		ExcessBlobGas: t.json.Genesis.ExcessBlobGas,
+		SlotNumber:    t.json.Genesis.SlotNumber,
 	}
 }
 
 /*
-See https://github.com/ethereum/tests/wiki/Blockchain-Tests-II
+See https://ethereum-tests.readthedocs.io/en/latest/blockchain-ref.html
 
 	Whether a block is valid or not is a bit subtle, it's defined by presence of
 	blockHeader, transactions and uncleHeaders fields. If they are missing, the block is
@@ -226,11 +244,11 @@ See https://github.com/ethereum/tests/wiki/Blockchain-Tests-II
 	expected we are expected to ignore it and continue processing and then validate the
 	post state.
 */
-func (t *BlockTest) insertBlocks(blockchain *core.BlockChain) ([]BtBlock, error) {
-	validBlocks := make([]BtBlock, 0)
+func (t *BlockTest) insertBlocks(blockchain *core.BlockChain) ([]btBlock, error) {
+	validBlocks := make([]btBlock, 0)
 	// insert the test blocks, which will execute all transactions
-	for bi, b := range t.Json.Blocks {
-		cb, err := b.Decode()
+	for bi, b := range t.json.Blocks {
+		cb, err := b.decode()
 		if err != nil {
 			if b.BlockHeader == nil {
 				log.Info("Block decoding failed", "index", bi, "err", err)
@@ -251,7 +269,7 @@ func (t *BlockTest) insertBlocks(blockchain *core.BlockChain) ([]BtBlock, error)
 		}
 		if b.BlockHeader == nil {
 			if data, err := json.MarshalIndent(cb.Header(), "", "  "); err == nil {
-				fmt.Fprintf(os.Stderr, "block (index %d) insertion should have failed due to: %v:\n%v\n",
+				fmt.Fprintf(os.Stdout, "block (index %d) insertion should have failed due to: %v:\n%v\n",
 					bi, b.ExpectException, string(data))
 			}
 			return nil, fmt.Errorf("block (index %d) insertion should have failed due to: %v",
@@ -267,7 +285,7 @@ func (t *BlockTest) insertBlocks(blockchain *core.BlockChain) ([]BtBlock, error)
 	return validBlocks, nil
 }
 
-func validateHeader(h *BtHeader, h2 *types.Header) error {
+func validateHeader(h *btHeader, h2 *types.Header) error {
 	if h.Bloom != h2.Bloom {
 		return fmt.Errorf("bloom: want: %x have: %x", h.Bloom, h2.Bloom)
 	}
@@ -313,7 +331,13 @@ func validateHeader(h *BtHeader, h2 *types.Header) error {
 	if h.Timestamp != h2.Time {
 		return fmt.Errorf("timestamp: want: %v have: %v", h.Timestamp, h2.Time)
 	}
-	if !reflect.DeepEqual(h.BaseFeePerGas, h2.BaseFee) {
+	// Optional post-London field: nil means "absent" (pre-London) and must not
+	// Cmp, which panics on a nil receiver. JSON "0x0" and RLP-decoded 0 are
+	// numerically equal but not DeepEqual (abs nil vs non-nil).
+	if (h.BaseFeePerGas == nil) != (h2.BaseFee == nil) {
+		return fmt.Errorf("baseFeePerGas: want: %v have: %v", h.BaseFeePerGas, h2.BaseFee)
+	}
+	if h.BaseFeePerGas != nil && h.BaseFeePerGas.Cmp(h2.BaseFee) != 0 {
 		return fmt.Errorf("baseFeePerGas: want: %v have: %v", h.BaseFeePerGas, h2.BaseFee)
 	}
 	if !reflect.DeepEqual(h.WithdrawalsRoot, h2.WithdrawalsHash) {
@@ -328,12 +352,15 @@ func validateHeader(h *BtHeader, h2 *types.Header) error {
 	if !reflect.DeepEqual(h.ParentBeaconBlockRoot, h2.ParentBeaconRoot) {
 		return fmt.Errorf("parentBeaconBlockRoot: want: %v have: %v", h.ParentBeaconBlockRoot, h2.ParentBeaconRoot)
 	}
+	if !reflect.DeepEqual(h.SlotNumber, h2.SlotNumber) {
+		return fmt.Errorf("slotNumber: want: %v have: %v", h.SlotNumber, h2.SlotNumber)
+	}
 	return nil
 }
 
 func (t *BlockTest) validatePostState(statedb *state.StateDB) error {
 	// validate post state accounts in test file against what we have in state db
-	for addr, acct := range t.Json.Post {
+	for addr, acct := range t.json.Post {
 		// address is indirectly verified by the other fields, as it's the db key
 		code2 := statedb.GetCode(addr)
 		balance2 := statedb.GetBalance(addr).ToBig()
@@ -357,9 +384,9 @@ func (t *BlockTest) validatePostState(statedb *state.StateDB) error {
 	return nil
 }
 
-func (t *BlockTest) validateImportedHeaders(cm *core.BlockChain, validBlocks []BtBlock) error {
+func (t *BlockTest) validateImportedHeaders(cm *core.BlockChain, validBlocks []btBlock) error {
 	// to get constant lookup when verifying block headers by hash (some tests have many blocks)
-	bmap := make(map[common.Hash]BtBlock, len(t.Json.Blocks))
+	bmap := make(map[common.Hash]btBlock, len(t.json.Blocks))
 	for _, b := range validBlocks {
 		bmap[b.BlockHeader.Hash] = b
 	}
@@ -376,7 +403,7 @@ func (t *BlockTest) validateImportedHeaders(cm *core.BlockChain, validBlocks []B
 	return nil
 }
 
-func (bb *BtBlock) Decode() (*types.Block, error) {
+func (bb *btBlock) decode() (*types.Block, error) {
 	data, err := hexutil.Decode(bb.Rlp)
 	if err != nil {
 		return nil, err

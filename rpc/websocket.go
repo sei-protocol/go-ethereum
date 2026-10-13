@@ -19,10 +19,7 @@ package rpc
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -63,7 +60,7 @@ func (s *Server) WebsocketHandler(allowedOrigins []string) http.Handler {
 			log.Debug("WebSocket upgrade failed", "err", err)
 			return
 		}
-		codec := newWebsocketCodec(conn, r.Host, r.Header, s.readLimit)
+		codec := newWebsocketCodec(conn, r.Host, r.Header, s.wsReadLimit)
 		s.ServeCodec(codec, 0)
 	})
 }
@@ -293,7 +290,7 @@ type websocketCodec struct {
 	pingReset    chan struct{}
 	pongReceived chan struct{}
 
-	// decodeReadActive is true while a frame is being decoded after pre-decode budget
+	// Sei: decodeReadActive is true while a frame is being read after pre-decode budget
 	// has been reserved. It is guarded by jsonCodec.encMu, the same lock pingLoop
 	// already holds around its own SetReadDeadline calls, so pingLoop's pong-triggered
 	// deadline clear can never race past a decode-owned deadline.
@@ -302,11 +299,23 @@ type websocketCodec struct {
 
 func newWebsocketCodec(conn *websocket.Conn, host string, req http.Header, readLimit int64) ServerCodec {
 	conn.SetReadLimit(readLimit)
-	encode := func(v interface{}, isErrorResponse bool) error {
-		return conn.WriteJSON(v)
+	var buf []byte
+	encodeMsg := func(ctx context.Context, msg *jsonrpcMessage, isError bool) error {
+		buf = appendMessage(buf[:0], msg)
+		return conn.WriteMessage(websocket.TextMessage, buf)
 	}
-	wc := &websocketCodec{
-		jsonCodec:    NewFuncCodec(conn, encode, conn.ReadJSON).(*jsonCodec),
+	encodeBatch := func(ctx context.Context, msgs []*jsonrpcMessage, isError bool) error {
+		buf = appendBatch(buf[:0], msgs)
+		return conn.WriteMessage(websocket.TextMessage, buf)
+	}
+	// Every frame is one message, so it can be read in one go and checked once.
+	// Sei: the read is admission-controlled, see readFrameSei.
+	var wc *websocketCodec
+	readFrame := func() ([]byte, error) {
+		return wc.readFrameSei()
+	}
+	wc = &websocketCodec{
+		jsonCodec:    newFuncCodec(conn, encodeMsg, encodeBatch, nil, readFrame),
 		conn:         conn,
 		pingReset:    make(chan struct{}, 1),
 		pongReceived: make(chan struct{}),
@@ -332,81 +341,17 @@ func newWebsocketCodec(conn *websocket.Conn, host string, req http.Header, readL
 	return wc
 }
 
-func (wc *websocketCodec) readBatch() ([]*jsonrpcMessage, bool, int64, error) {
-	_, r, err := wc.conn.NextReader()
-	if err != nil {
-		wc.fireOversizeFrameHook(err)
-		return nil, false, 0, err
-	}
-	if wc.handler != nil {
-		if err := wc.handler.acquirePreDecode(wc.handler.rootCtx); err != nil {
-			return nil, false, 0, err
-		}
-		if wc.handler.preDecodeHeld {
-			wc.beginDecodeRead(wc.handler.wsAdmissionTimeout)
-			defer wc.endDecodeRead()
-		}
-	}
-	var rawmsg json.RawMessage
-	if err := json.NewDecoder(r).Decode(&rawmsg); err != nil {
-		if wc.handler != nil {
-			wc.handler.releasePreDecode()
-		}
-		// Match gorilla's ReadJSON: don't let an empty frame look like a clean EOF.
-		if err == io.EOF {
-			err = io.ErrUnexpectedEOF
-		}
-		// A message split across continuation frames only crosses gorilla's read
-		// limit once enough frames have arrived, so ErrReadLimit can surface here
-		// instead of from NextReader above.
-		wc.fireOversizeFrameHook(err)
-		return nil, false, 0, err
-	}
-	messages, batch := parseMessage(rawmsg, wc.batchItemLimit())
-	for i, msg := range messages {
-		if msg == nil {
-			messages[i] = new(jsonrpcMessage)
-		}
-	}
-	return messages, batch, int64(len(rawmsg)), nil
-}
-
-// beginDecodeRead arms a read deadline bounding how long a frame may take to finish
-// arriving once pre-decode budget has been reserved for it, so a peer that stalls
-// mid-message (and keeps ponging to defeat pingLoop's own liveness deadline) cannot
-// hold that budget indefinitely.
-func (wc *websocketCodec) beginDecodeRead(timeout time.Duration) {
-	if timeout <= 0 {
-		return
-	}
-	wc.jsonCodec.encMu.Lock()
-	defer wc.jsonCodec.encMu.Unlock()
-	wc.decodeReadActive = true
-	wc.conn.SetReadDeadline(time.Now().Add(timeout))
-}
-
-// endDecodeRead clears the deadline armed by beginDecodeRead once the frame has been
-// fully read (successfully or not).
-func (wc *websocketCodec) endDecodeRead() {
-	wc.jsonCodec.encMu.Lock()
-	defer wc.jsonCodec.encMu.Unlock()
-	if !wc.decodeReadActive {
-		return
-	}
-	wc.decodeReadActive = false
-	wc.conn.SetReadDeadline(time.Time{})
-}
-
-// fireOversizeFrameHook reports a frame rejected by gorilla's read-limit enforcement
-// to the admission event hook. No JSON-RPC response is written for this case: gorilla
-// already sends a close(1009, "message too big") handshake to the peer on its own.
-func (wc *websocketCodec) fireOversizeFrameHook(err error) {
-	if errors.Is(err, websocket.ErrReadLimit) && wc.handler != nil && wc.handler.admissionEventHook != nil {
-		wc.handler.admissionEventHook(WSAdmissionReasonOversizeFrame)
-	}
-}
-
 func (wc *websocketCodec) close() {
+	// Send a WebSocket Close frame before closing the underlying connection,
+	// so the server sees a clean 1000 (normal closure) instead of 1006 (abnormal).
+	wc.jsonCodec.encMu.Lock()
+	wc.conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+		time.Now().Add(wsPingWriteTimeout),
+	)
+	wc.jsonCodec.encMu.Unlock()
+
 	wc.jsonCodec.close()
 	wc.wg.Wait()
 }
@@ -415,8 +360,15 @@ func (wc *websocketCodec) peerInfo() PeerInfo {
 	return wc.info
 }
 
-func (wc *websocketCodec) writeJSON(ctx context.Context, v interface{}, isError bool) error {
-	err := wc.jsonCodec.writeJSON(ctx, v, isError)
+func (wc *websocketCodec) writeJSON(ctx context.Context, msg *jsonrpcMessage, isError bool) error {
+	return wc.writeAndResetPing(wc.jsonCodec.writeJSON(ctx, msg, isError))
+}
+
+func (wc *websocketCodec) writeJSONBatch(ctx context.Context, msgs []*jsonrpcMessage, isError bool) error {
+	return wc.writeAndResetPing(wc.jsonCodec.writeJSONBatch(ctx, msgs, isError))
+}
+
+func (wc *websocketCodec) writeAndResetPing(err error) error {
 	if err == nil {
 		// Notify pingLoop to delay the next idle ping.
 		select {
@@ -448,7 +400,7 @@ func (wc *websocketCodec) pingLoop() {
 			wc.jsonCodec.encMu.Lock()
 			wc.conn.SetWriteDeadline(time.Now().Add(wsPingWriteTimeout))
 			wc.conn.WriteMessage(websocket.PingMessage, nil)
-			// A frame being decoded already owns the read deadline; don't override it
+			// Sei: a frame being read already owns the read deadline; don't override it
 			// with the longer pong-liveness deadline, or a stalling peer that keeps
 			// ponging could ride out the decode bound indefinitely.
 			if !wc.decodeReadActive {

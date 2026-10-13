@@ -23,10 +23,9 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/ethereum/go-ethereum/log"
-	"golang.org/x/sync/semaphore"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const MetadataApi = "rpc"
@@ -50,42 +49,26 @@ type Server struct {
 	services serviceRegistry
 	idgen    func() ID
 
-	mutex                    sync.Mutex
-	codecs                   map[ServerCodec]struct{}
-	denyList                 map[string]struct{}
-	run                      atomic.Bool
-	batchItemLimit           int
-	batchResponseLimit       int
-	httpBodyLimit            int
-	readLimit                int64
-	wsConcurrentRequestBytes int64 // configured limit; 0 disables
-	wsConcurrentBudget       *semaphore.Weighted
-	admissionEventHook       func(reason string)
-	wsAdmissionTimeout       time.Duration
-	deadlineHook             DeadlineHook
-}
+	mutex              sync.Mutex
+	codecs             map[ServerCodec]struct{}
+	run                atomic.Bool
+	batchItemLimit     int
+	batchResponseLimit int
+	httpBodyLimit      int
+	wsReadLimit        int64
+	tracerProvider     trace.TracerProvider
 
-// DeadlineHook derives the context used to invoke an RPC method. The returned
-// context must be non-nil and derived from ctx so that request values and
-// cancellation are preserved. The returned CancelFunc must also be non-nil;
-// the server calls it after the method callback returns.
-//
-// A deadline only cancels the derived context. Method callbacks must observe
-// context cancellation for the deadline to stop their work.
-//
-// A method that fails after the deadline passed reports the server's standard
-// timeout error (-32002, "request timed out") instead of its own. Anything
-// else, including cancellation without a deadline, is reported as-is.
-type DeadlineHook func(ctx context.Context, method string) (context.Context, context.CancelFunc)
+	serverSei // Sei: deny list, WS admission control, deadline hook
+}
 
 // NewServer creates a new server instance with no registered handlers.
 func NewServer() *Server {
 	server := &Server{
-		idgen:         randomIDGenerator(),
-		codecs:        make(map[ServerCodec]struct{}),
-		denyList:      make(map[string]struct{}),
-		httpBodyLimit: defaultBodyLimit,
-		readLimit:     wsDefaultReadLimit,
+		idgen:          randomIDGenerator(),
+		codecs:         make(map[ServerCodec]struct{}),
+		httpBodyLimit:  defaultBodyLimit,
+		wsReadLimit:    wsDefaultReadLimit,
+		tracerProvider: nil,
 	}
 	server.run.Store(true)
 	// Register the default service providing meta information about the RPC service such
@@ -113,69 +96,12 @@ func (s *Server) SetHTTPBodyLimit(limit int) {
 	s.httpBodyLimit = limit
 }
 
-// SetReadLimits sets the limit for max message size for Websocket requests.
+// SetWebsocketReadLimit sets the limit for max message size for Websocket requests.
 //
 // This method should be called before processing any requests via Websocket server.
-func (s *Server) SetReadLimits(limit int64) {
-	s.readLimit = limit
-	s.recomputeWSConcurrentBudget()
-}
-
-// SetWSConcurrentRequestBytes bounds the total size, in bytes, of JSON-RPC request
-// frames on persistent connections (WebSocket, IPC, stdio) that may be read and
-// processed concurrently, weighted by each frame's size. Set to 0 to disable the limit.
-// This method should be called before processing any requests via Websocket server.
-//
-// Note: idle connections avoid holding this budget on WebSocket only; idle
-// IPC/stdio connections still hold readLimit bytes indefinitely.
-func (s *Server) SetWSConcurrentRequestBytes(limit int64) {
-	s.wsConcurrentRequestBytes = limit
-	s.recomputeWSConcurrentBudget()
-}
-
-// SetWSAdmissionEventHook registers a callback invoked on WS admission-control
-// events. reason is one of:
-//   - WSAdmissionReasonBudgetWaitTimeout when the read loop stalls waiting for
-//     concurrent-byte budget before the next frame is decoded;
-//   - WSAdmissionReasonFrameAdmissionTimeout when a decoded frame cannot be
-//     admitted under the concurrent-byte budget;
-//   - WSAdmissionReasonOversizeFrame when gorilla's read limit rejects an
-//     incoming message before or during decode.
-func (s *Server) SetWSAdmissionEventHook(hook func(reason string)) {
-	s.admissionEventHook = hook
-}
-
-// SetWSAdmissionTimeout bounds how long a persistent connection will wait for
-// concurrent-byte budget to free up before a frame is read or committed, and how
-// long a WebSocket frame may take to finish arriving after its first data frame
-// once budget has been reserved for it. Zero or negative values select the
-// default (30s). This method should be called before processing any requests
-// via Websocket server.
-func (s *Server) SetWSAdmissionTimeout(timeout time.Duration) {
-	s.wsAdmissionTimeout = timeout
-}
-
-// SetDeadlineHook registers a hook that applies a context to every RPC method
-// dispatch across all transports, including *_subscribe setup and
-// *_unsubscribe calls. The hook receives the request context and full
-// "namespace_method" name.
-//
-// SetDeadlineHook is not safe for concurrent use. Call it before serving
-// requests.
-func (s *Server) SetDeadlineHook(hook DeadlineHook) {
-	s.deadlineHook = hook
-}
-
-func (s *Server) recomputeWSConcurrentBudget() {
-	limit := s.wsConcurrentRequestBytes
-	if limit <= 0 {
-		s.wsConcurrentBudget = nil
-		return
-	}
-	if s.readLimit > 0 && limit < s.readLimit {
-		limit = s.readLimit
-	}
-	s.wsConcurrentBudget = semaphore.NewWeighted(limit)
+func (s *Server) SetWebsocketReadLimit(limit int64) {
+	s.wsReadLimit = limit
+	s.recomputeWSConcurrentBudget() // Sei
 }
 
 // RegisterName creates a service for the given receiver type under the given name. When no
@@ -184,12 +110,6 @@ func (s *Server) recomputeWSConcurrentBudget() {
 // service collection this server provides to clients.
 func (s *Server) RegisterName(name string, receiver interface{}) error {
 	return s.services.registerName(name, receiver)
-}
-
-// RegisterDenyList add given method name to the deny list so that RPC requests that matches
-// any of the methods in deny list will got rejected directly.
-func (s *Server) RegisterDenyList(methodName string) {
-	s.denyList[methodName] = struct{}{}
 }
 
 // ServeCodec reads incoming requests from codec, calls the appropriate callback and writes
@@ -209,15 +129,20 @@ func (s *Server) ServeCodec(codec ServerCodec, options CodecOption) {
 		idgen:              s.idgen,
 		batchItemLimit:     s.batchItemLimit,
 		batchResponseLimit: s.batchResponseLimit,
-		wsConcurrentBudget: s.wsConcurrentBudget,
-		readLimit:          s.readLimit,
-		admissionEventHook: s.admissionEventHook,
-		wsAdmissionTimeout: s.wsAdmissionTimeout,
-		deadlineHook:       s.deadlineHook,
+		sei:                s.handlerSeiConfig(),
 	}
 	c := initClient(codec, &s.services, cfg)
 	<-codec.closed()
 	c.Close()
+}
+
+// setTracerProvider configures the OpenTelemetry TracerProvider for RPC call tracing.
+// Note: This method (and the TracerProvider field in the Server/Handler struct) is
+// primarily intended for testing. In particular, it allows tests to configure an
+// isolated TracerProvider without changing the global provider, avoiding
+// interference between tests running in parallel.
+func (s *Server) setTracerProvider(tp trace.TracerProvider) {
+	s.tracerProvider = tp
 }
 
 func (s *Server) trackCodec(codec ServerCodec) bool {
@@ -247,9 +172,9 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 		return
 	}
 
-	h := newHandler(ctx, codec, s.idgen, &s.services, s.batchItemLimit, s.batchResponseLimit, nil, s.readLimit, nil, s.wsAdmissionTimeout, s.deadlineHook)
+	h := newHandler(ctx, codec, s.idgen, &s.services, s.batchItemLimit, s.batchResponseLimit, s.tracerProvider, s.httpHandlerSeiConfig())
 	h.allowSubscribe = false
-	attachHandler(codec, h)
+	attachHandler(codec, h) // Sei
 	defer h.close(io.EOF, nil)
 
 	reqs, batch, _, err := codec.readBatch()
@@ -260,19 +185,13 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 		}
 		return
 	}
-	// check deny list
-	for _, req := range reqs {
-		method := req.Method
-		if _, found := s.denyList[method]; found {
-			resp := errorMessage(&methodNotFoundError{method: method})
-			codec.writeJSON(ctx, resp, true)
-			return
-		}
+	if s.rejectDenied(ctx, codec, reqs) { // Sei
+		return
 	}
 	if batch {
-		h.handleBatch(reqs, func() {})
+		h.handleBatch(reqs, nil)
 	} else {
-		h.handleMsg(reqs[0], func() {})
+		h.handleMsg(reqs[0], nil)
 	}
 }
 

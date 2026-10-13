@@ -12,10 +12,10 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-var _ = (*BtHeaderMarshaling)(nil)
+var _ = (*btHeaderMarshaling)(nil)
 
 // MarshalJSON marshals as JSON.
-func (b BtHeader) MarshalJSON() ([]byte, error) {
+func (b btHeader) MarshalJSON() ([]byte, error) {
 	type btHeader struct {
 		Bloom                 types.Bloom
 		Coinbase              common.Address
@@ -38,6 +38,7 @@ func (b BtHeader) MarshalJSON() ([]byte, error) {
 		BlobGasUsed           *math.HexOrDecimal64
 		ExcessBlobGas         *math.HexOrDecimal64
 		ParentBeaconBlockRoot *common.Hash
+		SlotNumber            *math.HexOrDecimal64
 	}
 	var enc btHeader
 	enc.Bloom = b.Bloom
@@ -61,11 +62,12 @@ func (b BtHeader) MarshalJSON() ([]byte, error) {
 	enc.BlobGasUsed = (*math.HexOrDecimal64)(b.BlobGasUsed)
 	enc.ExcessBlobGas = (*math.HexOrDecimal64)(b.ExcessBlobGas)
 	enc.ParentBeaconBlockRoot = b.ParentBeaconBlockRoot
+	enc.SlotNumber = (*math.HexOrDecimal64)(b.SlotNumber)
 	return json.Marshal(&enc)
 }
 
 // UnmarshalJSON unmarshals from JSON.
-func (b *BtHeader) UnmarshalJSON(input []byte) error {
+func (b *btHeader) UnmarshalJSON(input []byte) error {
 	type btHeader struct {
 		Bloom                 *types.Bloom
 		Coinbase              *common.Address
@@ -88,6 +90,7 @@ func (b *BtHeader) UnmarshalJSON(input []byte) error {
 		BlobGasUsed           *math.HexOrDecimal64
 		ExcessBlobGas         *math.HexOrDecimal64
 		ParentBeaconBlockRoot *common.Hash
+		SlotNumber            *math.HexOrDecimal64
 	}
 	var dec btHeader
 	if err := json.Unmarshal(input, &dec); err != nil {
@@ -155,6 +158,9 @@ func (b *BtHeader) UnmarshalJSON(input []byte) error {
 	}
 	if dec.ParentBeaconBlockRoot != nil {
 		b.ParentBeaconBlockRoot = dec.ParentBeaconBlockRoot
+	}
+	if dec.SlotNumber != nil {
+		b.SlotNumber = (*uint64)(dec.SlotNumber)
 	}
 	return nil
 }
