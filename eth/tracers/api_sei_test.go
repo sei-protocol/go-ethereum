@@ -300,6 +300,26 @@ func (p *countingPrecompile) Run(evm *vm.EVM, sender common.Address, callingCont
 	return []byte{0x42}, nil
 }
 
+func TestTraceBlockRecordsTxErrors(t *testing.T) {
+	t.Parallel()
+	backend, _ := newMetadataTestBackend(t)
+	defer backend.teardown()
+
+	timeout := "0s"
+	results, err := NewAPI(backend).TraceBlockByNumber(context.Background(), 1, &TraceConfig{Timeout: &timeout})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("want 3 results, have %d", len(results))
+	}
+	for i, res := range results {
+		if !strings.Contains(res.Error, "execution timeout") {
+			t.Fatalf("result %d: want execution timeout, have %+v", i, res)
+		}
+	}
+}
+
 // precompileTracer records, for every call, whether the target is a precompile
 // according to the VMContext the tracer was started with.
 type precompileTracer struct {
