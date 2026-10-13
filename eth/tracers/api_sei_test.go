@@ -253,6 +253,41 @@ func TestTraceBlockWithMetadataHonoursContext(t *testing.T) {
 	}
 }
 
+// TestTraceBlockHonoursContext is not parallel as it registers a tracer in
+// DefaultDirectory, whose map is not safe for concurrent writes.
+func TestTraceBlockHonoursContext(t *testing.T) {
+	backend, _ := newMetadataTestBackend(t)
+	defer backend.teardown()
+
+	var (
+		ctx, cancel = context.WithCancel(context.Background())
+		traced      atomic.Int32
+		tracer      = "seiCancelAfterFirstTxTracer"
+	)
+	defer cancel()
+	DefaultDirectory.Register(tracer, func(*Context, json.RawMessage, *params.ChainConfig) (*Tracer, error) {
+		return &Tracer{
+			Hooks: &tracing.Hooks{
+				OnTxEnd: func(*types.Receipt, error) {
+					if traced.Add(1) == 1 {
+						cancel()
+					}
+				},
+			},
+			GetResult: func() (json.RawMessage, error) { return json.RawMessage(`{}`), nil },
+			Stop:      func(error) {},
+		}, nil
+	}, false)
+
+	_, err := NewAPI(backend).TraceBlockByNumber(ctx, 1, &TraceConfig{Tracer: &tracer})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want %v, have %v", context.Canceled, err)
+	}
+	if have := traced.Load(); have != 1 {
+		t.Errorf("traced %d transactions, want 1", have)
+	}
+}
+
 // countingPrecompile is a custom precompile returning a fixed output.
 type countingPrecompile struct {
 	calls atomic.Int32
