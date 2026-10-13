@@ -106,8 +106,9 @@ func (m *Memory) GetPtr(offset, size uint64) []byte {
 		return nil
 	}
 
-	// memory is always resized before being accessed, no need to check bounds
-	return m.store[offset : offset+size]
+	// memory is always resized before being accessed, no need to check bounds.
+	// Capacity is clamped so callers cannot append into the unallocated tail.
+	return m.store[offset : offset+size : offset+size]
 }
 
 // Len returns the length of the backing slice
@@ -117,7 +118,8 @@ func (m *Memory) Len() int {
 
 // Data returns the backing slice
 func (m *Memory) Data() []byte {
-	return m.store
+	// Capacity is clamped, see GetPtr.
+	return m.store[:len(m.store):len(m.store)]
 }
 
 // Copy copies data from the src position slice into the dst position.

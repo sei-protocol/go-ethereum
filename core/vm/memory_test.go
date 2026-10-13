@@ -90,3 +90,34 @@ func BenchmarkResize(b *testing.B) {
 		memory.Resize(uint64(i))
 	}
 }
+
+// TestMemoryViewCapacityClamped verifies slices from GetPtr and Data cannot be
+// appended into the unallocated tail of the backing array.
+func TestMemoryViewCapacityClamped(t *testing.T) {
+	m := NewMemory()
+	m.Resize(128)          // grow the backing array...
+	m.store = m.store[:32] // ...then shrink the view, leaving spare capacity
+	if cap(m.store) < 128 {
+		t.Fatalf("test precondition: want spare capacity, have cap %d", cap(m.store))
+	}
+
+	for _, tc := range []struct {
+		name string
+		view []byte
+	}{
+		{"GetPtr", m.GetPtr(0, 32)},
+		{"GetPtr offset", m.GetPtr(16, 16)},
+		{"Data", m.Data()},
+	} {
+		if have, want := cap(tc.view), len(tc.view); have != want {
+			t.Errorf("%s: capacity not clamped: have %d, want %d", tc.name, have, want)
+		}
+		// Appending must reallocate rather than write into m.store's tail.
+		_ = append(tc.view, 0xff)
+	}
+
+	m.Resize(128)
+	if want := make([]byte, 96); !bytes.Equal(m.store[32:], want) {
+		t.Errorf("expanded memory not zeroed: %#x", m.store[32:])
+	}
+}
