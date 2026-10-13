@@ -324,21 +324,19 @@ func (l *list) Add(tx *types.Transaction, priceBump uint64) (bool, *types.Transa
 			return false, nil
 		}
 	}
-	// Add new tx cost to totalcost
+	// Project the new total cost on a scratch value so a rejection leaves totalcost untouched
 	cost, overflow := uint256.FromBig(tx.Cost())
 	if overflow {
 		return false, nil
 	}
-	total, overflow := new(uint256.Int).AddOverflow(l.totalcost, cost)
-	if overflow {
+	projected := new(uint256.Int).Set(l.totalcost)
+	if old != nil {
+		projected.SubOverflow(projected, uint256.MustFromBig(old.Cost()))
+	}
+	if _, overflow = projected.AddOverflow(projected, cost); overflow {
 		return false, nil
 	}
-	l.totalcost = total
-
-	// Old is being replaced, subtract old cost
-	if old != nil {
-		l.subTotalCost([]*types.Transaction{old})
-	}
+	l.totalcost.Set(projected)
 
 	// Otherwise overwrite the old transaction with the current one
 	l.txs.Put(tx)
