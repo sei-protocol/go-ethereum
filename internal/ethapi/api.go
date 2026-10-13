@@ -1439,8 +1439,21 @@ func AccessList(ctx context.Context, b Backend, blockNrOrHash rpc.BlockNumberOrH
 		if msg.BlobGasFeeCap != nil && msg.BlobGasFeeCap.BitLen() == 0 {
 			evm.Context.BlobBaseFee = new(big.Int)
 		}
+		// Abort in-progress execution when ctx is done, as in applyMessageWithEVM.
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				evm.Cancel()
+			case <-done:
+			}
+		}()
 		res, err := core.ApplyMessage(evm, msg, nil)
+		close(done)
 		evm.Release()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, 0, nil, ctxErr
+		}
 		if err != nil {
 			return nil, 0, nil, fmt.Errorf("failed to apply transaction: %v err: %v", args.ToTransaction(types.LegacyTxType).Hash(), err)
 		}
