@@ -579,7 +579,6 @@ func (c *ChainConfig) String() string {
 	return result
 }
 
-// Description returns a human-readable description of ChainConfig.
 // SstoreSetGasEIP2200 returns the gas charged by an SSTORE from clean zero to
 // non-zero, honouring the Sei chain override when set.
 func (c *ChainConfig) SstoreSetGasEIP2200() uint64 {
@@ -589,6 +588,7 @@ func (c *ChainConfig) SstoreSetGasEIP2200() uint64 {
 	return SstoreSetGasEIP2200
 }
 
+// Description returns a human-readable description of ChainConfig.
 func (c *ChainConfig) Description() string {
 	var banner string
 
