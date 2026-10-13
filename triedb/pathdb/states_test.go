@@ -325,6 +325,36 @@ func testStatesEncode(t *testing.T, rawStorageKey bool) {
 	}
 }
 
+func TestStatesEncodeDeletionMarkers(t *testing.T) {
+	s := newStates(
+		map[common.Hash][]byte{
+			{0xa}: {0xa0},
+			{0xb}: nil, // deleted account
+		},
+		map[common.Hash]map[common.Hash][]byte{
+			{0xa}: {
+				common.Hash{0x1}: {0x10},
+				common.Hash{0x2}: nil, // deleted slot
+			},
+		},
+		false,
+	)
+	buf := bytes.NewBuffer(nil)
+	if err := s.encode(buf); err != nil {
+		t.Fatalf("Failed to encode states, %v", err)
+	}
+	var dec stateSet
+	if err := dec.decode(rlp.NewStream(buf, 0)); err != nil {
+		t.Fatalf("Failed to decode states, %v", err)
+	}
+	if dec.accountData[common.Hash{0xb}] != nil {
+		t.Fatalf("Deleted account decoded as non-nil empty slice: %v", dec.accountData[common.Hash{0xb}])
+	}
+	if dec.storageData[common.Hash{0xa}][common.Hash{0x2}] != nil {
+		t.Fatalf("Deleted storage slot decoded as non-nil empty slice: %v", dec.storageData[common.Hash{0xa}][common.Hash{0x2}])
+	}
+}
+
 func TestStateWithOriginEncode(t *testing.T) {
 	testStateWithOriginEncode(t, false)
 	testStateWithOriginEncode(t, true)
