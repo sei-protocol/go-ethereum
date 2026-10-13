@@ -495,7 +495,7 @@ func (f *TxFetcher) handleAddErrors(txs []common.Hash, errs []error, metrics del
 		// Track the transaction hash if the price is too low for us.
 		// Avoid re-request this transaction when we receive another
 		// announcement.
-		case errors.Is(err, txpool.ErrUnderpriced) || errors.Is(err, txpool.ErrReplaceUnderpriced) || errors.Is(err, txpool.ErrTxGasPriceTooLow):
+		case errors.Is(err, txpool.ErrUnderpriced) || errors.Is(err, txpool.ErrReplaceUnderpriced) || errors.Is(err, txpool.ErrTxGasPriceTooLow) || errors.Is(err, txpool.ErrTotalCostOverflow):
 			f.underpriced.Add(txs[i], f.realTime())
 			underpriced++
 
