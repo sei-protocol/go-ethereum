@@ -699,7 +699,14 @@ func (pool *LegacyPool) add(tx *types.Transaction) (replaced bool, err error) {
 	}
 	// If the transaction pool is full, discard underpriced transactions
 	if uint64(pool.all.Slots()+numSlots(tx)) > pool.config.GlobalSlots+pool.config.GlobalQueue {
-		// Reject total-cost overflow before evicting anything (best-effort, demotions may still overflow later)
+		// Reject early if the transaction would overflow the sender's current
+		// target list total cost, before evicting cheaper remote transactions.
+		//
+		// Best-effort: this only projects onto targetList(from, tx) as it exists
+		// now. priced.Discard/removeTx below can demote the sender's pending txs
+		// into the sender's queued list, raising that list's totalcost after this
+		// check. enqueueTx will still reject with ErrTotalCostOverflow, but only
+		// after eviction may have already dropped other accounts' transactions.
 		if err := pool.targetList(from, tx).addCostOverflow(tx); err != nil {
 			return false, err
 		}
