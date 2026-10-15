@@ -397,6 +397,8 @@ type ChainConfig struct {
 	SeiSstoreSetGasEIP2200 *uint64 `json:"sstoreSetGasEIP2200,omitempty"` // Once per SSTORE operation from clean zero to non-zero
 	// SeiCoinbaseReceivesBaseFee credits the base fee to the coinbase instead of burning it
 	SeiCoinbaseReceivesBaseFee bool `json:"seiCoinbaseReceivesBaseFee,omitempty"`
+	// SeiAmsterdamTime activates Sei's Amsterdam subset (EIP-7708, 7954, 8024, 8246); requires Osaka
+	SeiAmsterdamTime *uint64 `json:"seiAmsterdamTime,omitempty"`
 
 	HomesteadBlock *big.Int `json:"homesteadBlock,omitempty"` // Homestead switch block (nil = no fork, 0 = already homestead)
 
@@ -856,6 +858,11 @@ func (c *ChainConfig) IsAmsterdam(num *big.Int, time uint64) bool {
 	return c.IsLondon(num) && isTimestampForked(c.AmsterdamTime, time)
 }
 
+// IsSeiAmsterdam returns whether Osaka and Sei's Amsterdam subset are active at time.
+func (c *ChainConfig) IsSeiAmsterdam(num *big.Int, time uint64) bool {
+	return c.IsOsaka(num, time) && isTimestampForked(c.SeiAmsterdamTime, time)
+}
+
 // IsBogota returns whether time is either equal to the Bogota fork time or greater.
 func (c *ChainConfig) IsBogota(num *big.Int, time uint64) bool {
 	return c.IsLondon(num) && isTimestampForked(c.BogotaTime, time)
@@ -984,6 +991,10 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 		}
 	}
 
+	if c.SeiAmsterdamTime != nil && (c.OsakaTime == nil || *c.OsakaTime > *c.SeiAmsterdamTime) {
+		return fmt.Errorf("unsupported fork ordering: seiAmsterdamTime %v requires osakaTime at or before it", *c.SeiAmsterdamTime)
+	}
+
 	// Check that all forks with blobs explicitly define the blob schedule configuration.
 	bsc := c.BlobScheduleConfig
 	if bsc == nil {
@@ -1097,6 +1108,9 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, headNumber *big.Int, 
 	}
 	if isForkTimestampIncompatible(c.OsakaTime, newcfg.OsakaTime, headTimestamp) {
 		return newTimestampCompatError("Osaka fork timestamp", c.OsakaTime, newcfg.OsakaTime)
+	}
+	if isForkTimestampIncompatible(c.SeiAmsterdamTime, newcfg.SeiAmsterdamTime, headTimestamp) {
+		return newTimestampCompatError("SeiAmsterdam fork timestamp", c.SeiAmsterdamTime, newcfg.SeiAmsterdamTime)
 	}
 	if isForkTimestampIncompatible(c.UBTTime, newcfg.UBTTime, headTimestamp) {
 		return newTimestampCompatError("UBT fork timestamp", c.UBTTime, newcfg.UBTTime)
@@ -1394,6 +1408,7 @@ type Rules struct {
 	IsBerlin, IsLondon                                      bool
 	IsMerge, IsShanghai, IsCancun, IsPrague, IsOsaka        bool
 	IsAmsterdam, IsBogota, IsUBT                            bool
+	IsSeiAmsterdam                                          bool
 }
 
 // Rules ensures c's ChainID is not nil.
@@ -1419,6 +1434,7 @@ func (c *ChainConfig) Rules(num *big.Int, isMerge bool, timestamp uint64) Rules 
 		IsPrague:         isMerge && c.IsPrague(num, timestamp),
 		IsOsaka:          isMerge && c.IsOsaka(num, timestamp),
 		IsAmsterdam:      isMerge && c.IsAmsterdam(num, timestamp),
+		IsSeiAmsterdam:   isMerge && c.IsSeiAmsterdam(num, timestamp),
 		IsBogota:         isMerge && c.IsBogota(num, timestamp),
 		IsUBT:            isUBT,
 		IsEIP4762:        isUBT,

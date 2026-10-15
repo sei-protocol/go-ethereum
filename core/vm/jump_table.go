@@ -68,6 +68,7 @@ var (
 	pragueInstructionSet           = newPragueInstructionSet()
 	osakaInstructionSet            = newOsakaInstructionSet()
 	amsterdamInstructionSet        = newAmsterdamInstructionSet()
+	seiAmsterdamInstructionSet     = newSeiAmsterdamInstructionSet()
 	bogotaInstructionSet           = newBogotaInstructionSet()
 )
 
@@ -108,6 +109,13 @@ func newAmsterdamInstructionSet() JumpTable {
 	enable7843(&instructionSet)        // EIP-7843 (SLOTNUM opcode)
 	enable8024(&instructionSet)        // EIP-8024 (Backward compatible SWAPN, DUPN, EXCHANGE)
 	enable8037And8038(&instructionSet) // EIP-8037 (state-gas metering) + EIP-8038 (state-access repricing)
+	return validate(instructionSet)
+}
+
+// newSeiAmsterdamInstructionSet returns Osaka plus Sei's Amsterdam opcodes.
+func newSeiAmsterdamInstructionSet() JumpTable {
+	instructionSet := newOsakaInstructionSet()
+	enable8024(&instructionSet) // EIP-8024 (Backward compatible SWAPN, DUPN, EXCHANGE)
 	return validate(instructionSet)
 }
 
