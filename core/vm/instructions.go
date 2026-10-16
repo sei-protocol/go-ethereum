@@ -961,7 +961,7 @@ func opSelfdestruct6780(pc *uint64, evm *EVM, scope *ScopeContext) ([]byte, erro
 		if this != beneficiary { // Skip no-op transfer when self-destructing to self.
 			evm.StateDB.AddBalance(beneficiary, balance, tracing.BalanceIncreaseSelfdestruct)
 			evm.StateDB.SubBalance(this, balance, tracing.BalanceDecreaseSelfdestruct)
-		} else if !evm.chainRules.IsAmsterdam {
+		} else if !evm.chainRules.IsAmsterdam && !evm.chainRules.IsSeiAmsterdam {
 			// Self-destructing to self burns the balance prior to EIP-8246.
 			// EIP-8246 (Amsterdam) removes this burn: the balance is left
 			// untouched and the account is preserved as a balance-only account
@@ -979,7 +979,7 @@ func opSelfdestruct6780(pc *uint64, evm *EVM, scope *ScopeContext) ([]byte, erro
 	}
 	// EIP-7708: emit a transfer log for the moved balance. EIP-8246 removes the
 	// SELFDESTRUCT burn entirely, so there is no longer a burn to log.
-	if evm.chainRules.IsAmsterdam && !balance.IsZero() && this != beneficiary {
+	if (evm.chainRules.IsAmsterdam || evm.chainRules.IsSeiAmsterdam) && !balance.IsZero() && this != beneficiary {
 		evm.StateDB.AddLog(types.EthTransferLog(this, beneficiary, balance))
 	}
 
