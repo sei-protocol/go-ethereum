@@ -777,7 +777,7 @@ func (s *StateDB) GetRefund() uint64 {
 // the journal as well as the refunds. Finalise, however, will not push any updates
 // into the tries just yet. Only IntermediateRoot or Commit will do that.
 func (s *StateDB) Finalise(rules params.Rules) *bal.ConstructionBlockAccessList {
-	if rules.IsAmsterdam {
+	if rules.IsAmsterdam || rules.IsSeiAmsterdam {
 		return s.finaliseAmsterdam(rules)
 	}
 	addressesToPrefetch := make([]common.Address, 0, len(s.journal.mutations))
@@ -823,8 +823,8 @@ func (s *StateDB) Finalise(rules params.Rules) *bal.ConstructionBlockAccessList 
 }
 
 func (s *StateDB) recordAccessListChanges(addr common.Address, state *journalMutationState) {
-	// No list means we are outside a transaction scope (e.g, PostExecution
-	// without a preceding Prepare), skip BAL recording.
+	// No list means BAL is inactive (e.g. Sei Amsterdam) or we are outside a
+	// transaction scope (e.g. PostExecution without a preceding Prepare).
 	if s.stateAccessList == nil {
 		return
 	}
