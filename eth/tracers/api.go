@@ -991,7 +991,7 @@ func (api *API) TraceCall(ctx context.Context, args ethapi.TransactionArgs, bloc
 		return nil, err
 	}
 	var (
-		msg         = args.ToMessage(blockContext.BaseFee, true)
+		msg         = args.ToMessage(blockContext.BaseFee, true).SkipExecutionGasCapCheck()
 		tx          = args.ToTransaction(types.DynamicFeeTxType)
 		traceConfig *TraceConfig
 	)
@@ -1050,6 +1050,7 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 	tracingStateDB := state.NewHookedState(statedb, tracer.Hooks)
 	evm := api.newEVM(vmctx, tracingStateDB, vmctx.BlockNumber.Int64(), vm.Config{Tracer: tracer.Hooks, NoBaseFee: true})
 	defer evm.Release()
+
 	if precompiles != nil {
 		evm.SetPrecompiles(precompiles)
 	}

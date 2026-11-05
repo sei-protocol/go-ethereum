@@ -137,6 +137,11 @@ type EVM struct {
 	returnData []byte // Last CALL's return data for subsequent reuse
 
 	arena *stackArena
+
+	// forceTableLoop is a test-only switch. The differential test sets it so
+	// that Run uses the table loop (execTraced) for the whole call tree, which
+	// lets the test compare it against the generated dispatch.
+	forceTableLoop bool
 }
 
 // NewEVM constructs an EVM instance with the supplied block context, state
@@ -220,9 +225,15 @@ func (evm *EVM) SetPrecompiles(precompiles PrecompiledContracts) {
 	evm.precompileCache = nil
 }
 
-// SetJumpDestCache configures the analysis cache.
+// SetJumpDestCache configures a shared analysis cache. It is fronted by a
+// per-transaction map, so that eviction from the shared cache never causes the
+// same code to be re-analysed within a transaction.
 func (evm *EVM) SetJumpDestCache(jumpDests JumpDestCache) {
-	evm.jumpDests = jumpDests
+	if jumpDests == nil {
+		evm.jumpDests = newMapJumpDests()
+		return
+	}
+	evm.jumpDests = newLayeredJumpDests(jumpDests)
 }
 
 // SetPrecompileCache configures the precompile result cache.
@@ -242,6 +253,11 @@ func (evm *EVM) SetTxContext(txCtx TxContext) {
 		txCtx.AccessEvents = state.NewAccessEvents()
 	}
 	evm.TxContext = txCtx
+
+	// Reset the per-tx jumpdest map
+	if jumpDests, ok := evm.jumpDests.(*layeredJumpDests); ok {
+		jumpDests.reset()
+	}
 }
 
 // Cancel cancels any running EVM operation. This may be called concurrently and
@@ -795,13 +811,19 @@ func (evm *EVM) captureEnd(depth int, startGas GasBudget, leftOverGas GasBudget,
 // GetVMContext provides context about the block being executed as well as state
 // to the tracers.
 func (evm *EVM) GetVMContext() *tracing.VMContext {
+	// Tracers are handed a view of the state whose reads leave no trace in the
+	// execution, e.g. in the block-level access list.
+	var statedb tracing.StateDB
+	if evm.StateDB != nil {
+		statedb = state.NewTracerView(evm.StateDB)
+	}
 	return &tracing.VMContext{
 		Coinbase:    evm.Context.Coinbase,
 		BlockNumber: evm.Context.BlockNumber,
 		Time:        evm.Context.Time,
 		Random:      evm.Context.Random,
 		BaseFee:     evm.Context.BaseFee,
-		StateDB:     evm.StateDB,
+		StateDB:     statedb,
 		Precompiles: evm.GetPrecompiles(),
 	}
 }

@@ -65,7 +65,9 @@ type VMContext struct {
 	Time        uint64
 	Random      *common.Hash
 	BaseFee     *big.Int
-	StateDB     StateDB
+
+	// StateDB provides read access to the state being executed on.
+	StateDB StateDB
 	// Precompiles lists the addresses of all precompiles of the EVM, including
 	// chain-specific (custom) ones.
 	Precompiles []common.Address
