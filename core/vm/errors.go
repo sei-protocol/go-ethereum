@@ -44,22 +44,15 @@ var (
 	errStopToken = errors.New("stop token")
 )
 
-// AbortError is an interface that errors can implement to signal that execution
-// should be aborted immediately and the error should propagate through the call stack.
-type AbortError interface {
-	error
-	IsAbortError() bool
-}
-
 // ErrStackUnderflow wraps an evm error when the items on the stack less
 // than the minimal requirement.
 type ErrStackUnderflow struct {
-	StackLen int
-	Required int
+	stackLen int
+	required int
 }
 
 func (e ErrStackUnderflow) Error() string {
-	return fmt.Sprintf("stack underflow (%d <=> %d)", e.StackLen, e.Required)
+	return fmt.Sprintf("stack underflow (%d <=> %d)", e.stackLen, e.required)
 }
 
 func (e ErrStackUnderflow) Unwrap() error {
@@ -83,10 +76,16 @@ func (e ErrStackOverflow) Unwrap() error {
 
 // ErrInvalidOpCode wraps an evm error when an invalid opcode is encountered.
 type ErrInvalidOpCode struct {
-	opcode OpCode
+	opcode  OpCode
+	operand *byte
 }
 
-func (e *ErrInvalidOpCode) Error() string { return fmt.Sprintf("invalid opcode: %s", e.opcode) }
+func (e *ErrInvalidOpCode) Error() string {
+	if e.operand != nil {
+		return fmt.Sprintf("invalid opcode: %s (operand: 0x%02x)", e.opcode, *e.operand)
+	}
+	return fmt.Sprintf("invalid opcode: %s", e.opcode)
+}
 
 // rpcError is the same interface as the one defined in rpc/errors.go
 // but we do not want to depend on rpc package here so we redefine it.

@@ -91,11 +91,8 @@ func BenchmarkResize(b *testing.B) {
 	}
 }
 
-// TestMemoryViewCapacityClamped verifies that the slices handed out by GetPtr,
-// Data and Store cannot be appended into the unallocated tail of the backing
-// array. Resize reslices within capacity, so a stray append by a caller (e.g. a
-// custom precompile) would otherwise make newly expanded memory read non-zero,
-// breaking the EVM invariant that fresh memory is zeroed.
+// TestMemoryViewCapacityClamped verifies slices from GetPtr and Data cannot be
+// appended into the unallocated tail of the backing array.
 func TestMemoryViewCapacityClamped(t *testing.T) {
 	m := NewMemory()
 	m.Resize(128)          // grow the backing array...
@@ -111,7 +108,6 @@ func TestMemoryViewCapacityClamped(t *testing.T) {
 		{"GetPtr", m.GetPtr(0, 32)},
 		{"GetPtr offset", m.GetPtr(16, 16)},
 		{"Data", m.Data()},
-		{"Store", m.Store()},
 	} {
 		if have, want := cap(tc.view), len(tc.view); have != want {
 			t.Errorf("%s: capacity not clamped: have %d, want %d", tc.name, have, want)

@@ -78,22 +78,20 @@ func BenchmarkTransactionTraceV2(b *testing.B) {
 	state := tests.MakePreState(rawdb.NewMemoryDatabase(), alloc, false, rawdb.HashScheme)
 	defer state.Close()
 
-	evm := vm.NewEVM(context, state.StateDB, params.AllEthashProtocolChanges, vm.Config{}, nil)
+	evm := vm.NewEVM(context, state.StateDB, params.AllEthashProtocolChanges, vm.Config{})
 
 	msg, err := core.TransactionToMessage(tx, signer, context.BaseFee)
 	if err != nil {
 		b.Fatalf("failed to prepare transaction for tracing: %v", err)
 	}
-	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		tracer := logger.NewStructLogger(&logger.Config{}).Hooks()
 		tracer.OnTxStart(evm.GetVMContext(), tx, msg.From)
 		evm.Config.Tracer = tracer
 
 		snap := state.StateDB.Snapshot()
-		_, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(tx.Gas()))
+		_, err := core.ApplyMessage(evm, msg, nil)
 		if err != nil {
 			b.Fatal(err)
 		}

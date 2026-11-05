@@ -58,7 +58,7 @@ func assertBatchTooLarge(t *testing.T, resp []jsonrpcMessage, wantID string) {
 	if len(resp) != 1 {
 		t.Fatalf("got %d responses, want 1", len(resp))
 	}
-	if resp[0].Error == nil || resp[0].Error.Message != errMsgBatchTooLarge {
+	if resp[0].Error == nil || resp[0].decodeError().Message != errMsgBatchTooLarge {
 		t.Fatalf("wrong response to oversize batch: %+v", resp[0])
 	}
 	if id := string(resp[0].ID); id != wantID {

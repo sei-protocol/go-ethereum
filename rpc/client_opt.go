@@ -18,10 +18,9 @@ package rpc
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/gorilla/websocket"
-	"golang.org/x/sync/semaphore"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // ClientOption is a configuration option for the RPC client.
@@ -34,6 +33,7 @@ type clientConfig struct {
 	httpClient  *http.Client
 	httpHeaders http.Header
 	httpAuth    HTTPAuth
+	tmprop      propagation.TextMapPropagator
 
 	// WebSocket options
 	wsDialer           *websocket.Dialer
@@ -43,11 +43,7 @@ type clientConfig struct {
 	idgen              func() ID
 	batchItemLimit     int
 	batchResponseLimit int
-	wsConcurrentBudget *semaphore.Weighted
-	readLimit          int64
-	admissionEventHook func(reason string)
-	wsAdmissionTimeout time.Duration
-	deadlineHook       DeadlineHook
+	sei                handlerSeiConfig // Sei: admission control and deadline hook
 }
 
 func (cfg *clientConfig) initHeaders() {
@@ -102,6 +98,22 @@ func WithHeaders(headers http.Header) ClientOption {
 	})
 }
 
+// WithTextMapPropagator configures OpenTelemetry trace propagation.
+// Note, by default, trace context is NOT propagated by rpc.Client.
+// To enable propagation via the `traceparent` header, you must explicitly
+// enable it by setting a propagator, e.g.
+//
+//	prop := propagation.TraceContext{}
+//	c, err := rpc.DialOptions(ctx, "http://", rpc.WithTextMapPropagator(prop))
+func WithTextMapPropagator(tmp propagation.TextMapPropagator) ClientOption {
+	if tmp == nil {
+		panic("nil TextMapPropagator configured")
+	}
+	return optionFunc(func(cfg *clientConfig) {
+		cfg.tmprop = tmp
+	})
+}
+
 // WithHTTPClient configures the http.Client used by the RPC client.
 func WithHTTPClient(c *http.Client) ClientOption {
 	return optionFunc(func(cfg *clientConfig) {
@@ -150,15 +162,5 @@ func WithBatchItemLimit(limit int) ClientOption {
 func WithBatchResponseSizeLimit(sizeLimit int) ClientOption {
 	return optionFunc(func(cfg *clientConfig) {
 		cfg.batchResponseLimit = sizeLimit
-	})
-}
-
-// WithWSAdmissionTimeout bounds how long incoming frames wait for concurrent-byte
-// budget before admission is rejected. Zero or negative values select the default (30s).
-//
-// Note: this option applies when processing incoming frames on persistent connections.
-func WithWSAdmissionTimeout(timeout time.Duration) ClientOption {
-	return optionFunc(func(cfg *clientConfig) {
-		cfg.wsAdmissionTimeout = timeout
 	})
 }

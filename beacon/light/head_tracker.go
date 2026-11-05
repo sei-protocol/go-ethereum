@@ -21,7 +21,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/beacon/params"
 	"github.com/ethereum/go-ethereum/beacon/types"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
 )
 
@@ -38,13 +40,15 @@ type HeadTracker struct {
 	hasFinalityUpdate   bool
 	prefetchHead        types.HeadInfo
 	changeCounter       uint64
+	saveCheckpoint      func(common.Hash)
 }
 
 // NewHeadTracker creates a new HeadTracker.
-func NewHeadTracker(committeeChain *CommitteeChain, minSignerCount int) *HeadTracker {
+func NewHeadTracker(committeeChain *CommitteeChain, minSignerCount int, saveCheckpoint func(common.Hash)) *HeadTracker {
 	return &HeadTracker{
 		committeeChain: committeeChain,
 		minSignerCount: minSignerCount,
+		saveCheckpoint: saveCheckpoint,
 	}
 }
 
@@ -69,7 +73,7 @@ func (h *HeadTracker) ValidatedFinality() (types.FinalityUpdate, bool) {
 // slot or same slot and more signers) then ValidatedOptimistic is updated.
 // The boolean return flag signals if ValidatedOptimistic has been changed.
 func (h *HeadTracker) ValidateOptimistic(update types.OptimisticUpdate) (bool, error) {
-	if err := update.Validate(); err != nil {
+	if err := update.Validate(h.committeeChain.config); err != nil {
 		return false, err
 	}
 
@@ -89,7 +93,7 @@ func (h *HeadTracker) ValidateOptimistic(update types.OptimisticUpdate) (bool, e
 // slot or same slot and more signers) then ValidatedFinality is updated.
 // The boolean return flag signals if ValidatedFinality has been changed.
 func (h *HeadTracker) ValidateFinality(update types.FinalityUpdate) (bool, error) {
-	if err := update.Validate(); err != nil {
+	if err := update.Validate(h.committeeChain.config); err != nil {
 		return false, err
 	}
 
@@ -100,6 +104,9 @@ func (h *HeadTracker) ValidateFinality(update types.FinalityUpdate) (bool, error
 	if replace {
 		h.finalityUpdate, h.hasFinalityUpdate = update, true
 		h.changeCounter++
+		if h.saveCheckpoint != nil && update.Finalized.Slot%params.EpochLength == 0 {
+			h.saveCheckpoint(update.Finalized.Hash())
+		}
 	}
 	return replace, err
 }

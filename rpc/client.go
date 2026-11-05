@@ -29,11 +29,9 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/log"
-	"golang.org/x/sync/semaphore"
 )
 
 var (
-	ErrBadResult                 = errors.New("bad result in JSON-RPC response")
 	ErrClientQuit                = errors.New("client is closed")
 	ErrNoResult                  = errors.New("JSON-RPC response has no result")
 	ErrMissingBatchResponse      = errors.New("response batch did not contain a response to this call")
@@ -90,11 +88,7 @@ type Client struct {
 	// config fields
 	batchItemLimit       int
 	batchResponseMaxSize int
-	wsConcurrentBudget   *semaphore.Weighted
-	readLimit            int64
-	admissionEventHook   func(reason string)
-	wsAdmissionTimeout   time.Duration
-	deadlineHook         DeadlineHook
+	sei                  handlerSeiConfig // Sei: admission control and deadline hook
 
 	// writeConn is used for writing to the connection on the caller's goroutine. It should
 	// only be accessed outside of dispatch, with the write lock held. The write lock is
@@ -126,24 +120,9 @@ func (c *Client) newClientConn(conn ServerCodec) *clientConn {
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, clientContextKey{}, c)
 	ctx = context.WithValue(ctx, peerInfoContextKey{}, conn.peerInfo())
-	handler := newHandler(ctx, conn, c.idgen, c.services, c.batchItemLimit, c.batchResponseMaxSize, c.wsConcurrentBudget, c.readLimit, c.admissionEventHook, c.wsAdmissionTimeout, c.deadlineHook)
-	attachHandler(conn, handler)
+	handler := newHandler(ctx, conn, c.idgen, c.services, c.batchItemLimit, c.batchResponseMaxSize, nil, c.sei)
+	attachHandler(conn, handler) // Sei
 	return &clientConn{conn, handler}
-}
-
-// handlerSetter is implemented by codecs that need the handler wired in to enforce its
-// read limits (jsonCodec and, via embedding, websocketCodec).
-type handlerSetter interface {
-	setHandler(h *handler)
-}
-
-// attachHandler wires h into codec so reads on it observe the handler's limits. A codec
-// that does not implement handlerSetter reads unlimited, and the handler's own checks
-// remain the backstop.
-func attachHandler(codec ServerCodec, h *handler) {
-	if c, ok := codec.(handlerSetter); ok {
-		c.setHandler(h)
-	}
 }
 
 func (cc *clientConn) close(err error, inflightReq *requestOp) {
@@ -154,7 +133,7 @@ func (cc *clientConn) close(err error, inflightReq *requestOp) {
 type readOp struct {
 	msgs    []*jsonrpcMessage
 	batch   bool
-	release func()
+	release func() // Sei: returns the admission budget held for msgs
 }
 
 // requestOp represents a pending request. This is used for both batch and non-batch
@@ -271,11 +250,7 @@ func initClient(conn ServerCodec, services *serviceRegistry, cfg *clientConfig) 
 		idgen:                cfg.idgen,
 		batchItemLimit:       cfg.batchItemLimit,
 		batchResponseMaxSize: cfg.batchResponseLimit,
-		wsConcurrentBudget:   cfg.wsConcurrentBudget,
-		readLimit:            cfg.readLimit,
-		admissionEventHook:   cfg.admissionEventHook,
-		wsAdmissionTimeout:   cfg.wsAdmissionTimeout,
-		deadlineHook:         cfg.deadlineHook,
+		sei:                  cfg.sei,
 		writeConn:            conn,
 		close:                make(chan struct{}),
 		closing:              make(chan struct{}),
@@ -364,7 +339,7 @@ func (c *Client) Call(result interface{}, method string, args ...interface{}) er
 // The result must be a pointer so that package json can unmarshal into it. You
 // can also pass nil, in which case the result is ignored.
 func (c *Client) CallContext(ctx context.Context, result interface{}, method string, args ...interface{}) error {
-	if result != nil && reflect.TypeOf(result).Kind() != reflect.Ptr {
+	if result != nil && reflect.TypeOf(result).Kind() != reflect.Pointer {
 		return fmt.Errorf("call result parameter must be pointer or nil interface: %v", result)
 	}
 	msg, err := c.newMessage(method, args...)
@@ -393,7 +368,7 @@ func (c *Client) CallContext(ctx context.Context, result interface{}, method str
 	resp := batchresp[0]
 	switch {
 	case resp.Error != nil:
-		return resp.Error
+		return resp.decodeError()
 	case len(resp.Result) == 0:
 		return ErrNoResult
 	default:
@@ -426,6 +401,9 @@ func (c *Client) BatchCall(b []BatchElem) error {
 //
 // Note that batch calls may not be executed atomically on the server side.
 func (c *Client) BatchCallContext(ctx context.Context, b []BatchElem) error {
+	if len(b) == 0 {
+		return &invalidRequestError{"empty batch"}
+	}
 	var (
 		msgs = make([]*jsonrpcMessage, len(b))
 		byID = make(map[string]int, len(b))
@@ -448,7 +426,7 @@ func (c *Client) BatchCallContext(ctx context.Context, b []BatchElem) error {
 	if c.isHTTP {
 		err = c.sendBatchHTTP(ctx, op, msgs)
 	} else {
-		err = c.send(ctx, op, msgs)
+		err = c.sendBatch(ctx, op, msgs)
 	}
 	if err != nil {
 		return err
@@ -478,7 +456,7 @@ func (c *Client) BatchCallContext(ctx context.Context, b []BatchElem) error {
 		elem := &b[index]
 		switch {
 		case resp.Error != nil:
-			elem.Error = resp.Error
+			elem.Error = resp.decodeError()
 		case resp.Result == nil:
 			elem.Error = ErrNoResult
 		default:
@@ -513,12 +491,6 @@ func (c *Client) Notify(ctx context.Context, method string, args ...interface{})
 // EthSubscribe registers a subscription under the "eth" namespace.
 func (c *Client) EthSubscribe(ctx context.Context, channel interface{}, args ...interface{}) (*ClientSubscription, error) {
 	return c.Subscribe(ctx, "eth", channel, args...)
-}
-
-// ShhSubscribe registers a subscription under the "shh" namespace.
-// Deprecated: use Subscribe(ctx, "shh", ...).
-func (c *Client) ShhSubscribe(ctx context.Context, channel interface{}, args ...interface{}) (*ClientSubscription, error) {
-	return c.Subscribe(ctx, "shh", channel, args...)
 }
 
 // Subscribe calls the "<namespace>_subscribe" method with the given arguments,
@@ -587,7 +559,7 @@ func (c *Client) newMessage(method string, paramsIn ...interface{}) (*jsonrpcMes
 
 // send registers op with the dispatch loop, then sends msg on the connection.
 // if sending fails, op is deregistered.
-func (c *Client) send(ctx context.Context, op *requestOp, msg interface{}) error {
+func (c *Client) send(ctx context.Context, op *requestOp, msg *jsonrpcMessage) error {
 	select {
 	case c.reqInit <- op:
 		err := c.write(ctx, msg, false)
@@ -602,7 +574,22 @@ func (c *Client) send(ctx context.Context, op *requestOp, msg interface{}) error
 	}
 }
 
-func (c *Client) write(ctx context.Context, msg interface{}, retry bool) error {
+// sendBatch registers op with the dispatch loop, then sends a batch of messages
+// on the connection. If sending fails, op is deregistered.
+func (c *Client) sendBatch(ctx context.Context, op *requestOp, msgs []*jsonrpcMessage) error {
+	select {
+	case c.reqInit <- op:
+		err := c.writeBatch(ctx, msgs, false)
+		c.reqSent <- err
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.closing:
+		return ErrClientQuit
+	}
+}
+
+func (c *Client) write(ctx context.Context, msg *jsonrpcMessage, retry bool) error {
 	if c.writeConn == nil {
 		// The previous write failed. Try to establish a new connection.
 		if err := c.reconnect(ctx); err != nil {
@@ -614,6 +601,22 @@ func (c *Client) write(ctx context.Context, msg interface{}, retry bool) error {
 		c.writeConn = nil
 		if !retry {
 			return c.write(ctx, msg, true)
+		}
+	}
+	return err
+}
+
+func (c *Client) writeBatch(ctx context.Context, msgs []*jsonrpcMessage, retry bool) error {
+	if c.writeConn == nil {
+		if err := c.reconnect(ctx); err != nil {
+			return err
+		}
+	}
+	err := c.writeConn.writeJSONBatch(ctx, msgs, false)
+	if err != nil {
+		c.writeConn = nil
+		if !retry {
+			return c.writeBatch(ctx, msgs, true)
 		}
 	}
 	return err
@@ -743,33 +746,22 @@ func (c *Client) drainRead() {
 // read decodes RPC messages from a codec, feeding them into dispatch.
 func (c *Client) read(conn *clientConn) {
 	codec := conn.codec
-	h := conn.handler
 	for {
 		msgs, batch, rawLen, err := codec.readBatch()
+		if _, ok := err.(*json.SyntaxError); ok {
+			msg := errorMessage(&parseError{err.Error()})
+			codec.writeJSON(context.Background(), msg, true)
+		}
 		if err != nil {
-			// Unmatched errors (e.g. oversize WS frames) fall through with no
-			// response: gorilla already sent its own close(1009) for those.
-			var syntaxErr *json.SyntaxError
-			switch {
-			case errors.As(err, &syntaxErr):
-				msg := errorMessage(&parseError{err.Error()})
-				codec.writeJSON(context.Background(), msg, true)
-			case errors.Is(err, errBudgetWaitTimeout):
-				msg := errorMessage(&internalServerError{errcodeBudgetWaitTimeout, errMsgBudgetWaitTimeout})
-				codec.writeJSON(context.Background(), msg, true)
-			}
+			handleReadErrorSei(codec, err) // Sei
 			c.readErr <- err
 			return
 		}
-		release, err := h.commitFrameBudget(h.rootCtx, rawLen)
+		release, err := conn.handler.admitFrame(codec, msgs, batch, rawLen) // Sei
 		if err != nil {
-			h.releasePreDecode()
-			if resp := frameBudgetExceededResponse(msgs, batch); resp != nil {
-				codec.writeJSON(context.Background(), resp, true)
-			}
 			c.readErr <- err
 			return
 		}
-		c.readOp <- readOp{msgs: msgs, batch: batch, release: release}
+		c.readOp <- readOp{msgs, batch, release}
 	}
 }
