@@ -18,6 +18,7 @@
 package locals
 
 import (
+	"cmp"
 	"slices"
 	"sync"
 	"time"
@@ -74,32 +75,22 @@ func New(journalPath string, journalTime time.Duration, chainConfig *params.Chai
 
 // Track adds a transaction to the tracked set.
 // Note: blob-type transactions are ignored.
-func (tracker *TxTracker) Track(tx *types.Transaction) error {
-	return tracker.TrackAll([]*types.Transaction{tx})[0]
+func (tracker *TxTracker) Track(tx *types.Transaction) {
+	tracker.TrackAll([]*types.Transaction{tx})
 }
 
 // TrackAll adds a list of transactions to the tracked set.
 // Note: blob-type transactions are ignored.
-func (tracker *TxTracker) TrackAll(txs []*types.Transaction) []error {
+func (tracker *TxTracker) TrackAll(txs []*types.Transaction) {
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
 
-	var errors []error
 	for _, tx := range txs {
 		if tx.Type() == types.BlobTxType {
-			errors = append(errors, nil)
-			continue
-		}
-		// Ignore the transactions which are failed for fundamental
-		// validation such as invalid parameters.
-		if err := tracker.pool.ValidateTxBasics(tx); err != nil {
-			log.Debug("Invalid transaction submitted", "hash", tx.Hash(), "err", err)
-			errors = append(errors, err)
 			continue
 		}
 		// If we're already tracking it, it's a no-op
 		if _, ok := tracker.all[tx.Hash()]; ok {
-			errors = append(errors, nil)
 			continue
 		}
 		// Theoretically, checking the error here is unnecessary since sender recovery
@@ -108,11 +99,8 @@ func (tracker *TxTracker) TrackAll(txs []*types.Transaction) []error {
 		// Therefore, the error is still checked just in case.
 		addr, err := types.Sender(tracker.signer, tx)
 		if err != nil {
-			errors = append(errors, err)
 			continue
 		}
-		errors = append(errors, nil)
-
 		tracker.all[tx.Hash()] = tx
 		if tracker.byAddr[addr] == nil {
 			tracker.byAddr[addr] = legacypool.NewSortedMap()
@@ -124,17 +112,17 @@ func (tracker *TxTracker) TrackAll(txs []*types.Transaction) []error {
 		}
 	}
 	localGauge.Update(int64(len(tracker.all)))
-	return errors
 }
 
 // recheck checks and returns any transactions that needs to be resubmitted.
-func (tracker *TxTracker) recheck(journalCheck bool) (resubmits []*types.Transaction, rejournal map[common.Address]types.Transactions) {
+func (tracker *TxTracker) recheck(journalCheck bool) []*types.Transaction {
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
 
 	var (
 		numStales = 0
 		numOk     = 0
+		resubmits []*types.Transaction
 	)
 	for sender, txs := range tracker.byAddr {
 		// Wipe the stales
@@ -155,7 +143,7 @@ func (tracker *TxTracker) recheck(journalCheck bool) (resubmits []*types.Transac
 	}
 
 	if journalCheck { // rejournal
-		rejournal = make(map[common.Address]types.Transactions)
+		rejournal := make(map[common.Address]types.Transactions)
 		for _, tx := range tracker.all {
 			addr, _ := types.Sender(tracker.signer, tx)
 			rejournal[addr] = append(rejournal[addr], tx)
@@ -164,19 +152,38 @@ func (tracker *TxTracker) recheck(journalCheck bool) (resubmits []*types.Transac
 		for _, list := range rejournal {
 			// cmp(a, b) should return a negative number when a < b,
 			slices.SortFunc(list, func(a, b *types.Transaction) int {
-				return int(a.Nonce() - b.Nonce())
+				return cmp.Compare(a.Nonce(), b.Nonce())
 			})
+		}
+		// Rejournal the tracker while holding the lock. No new transactions will
+		// be added to the old journal during this period, preventing any potential
+		// transaction loss.
+		if tracker.journal != nil {
+			if err := tracker.journal.rotate(rejournal); err != nil {
+				log.Warn("Transaction journal rotation failed", "err", err)
+			}
 		}
 	}
 	localGauge.Update(int64(len(tracker.all)))
 	log.Debug("Tx tracker status", "need-resubmit", len(resubmits), "stale", numStales, "ok", numOk)
-	return resubmits, rejournal
+	return resubmits
 }
 
 // Start implements node.Lifecycle interface
 // Start is called after all services have been constructed and the networking
 // layer was also initialized to spawn any goroutines required by the service.
 func (tracker *TxTracker) Start() error {
+	if tracker.journal != nil {
+		tracker.journal.load(func(transactions []*types.Transaction) []error {
+			tracker.TrackAll(transactions)
+			return nil
+		})
+		// Setup the writer for the upcoming transactions
+		if err := tracker.journal.setupWriter(); err != nil {
+			log.Error("Failed to setup the journal writer", "err", err)
+			return err
+		}
+	}
 	tracker.wg.Add(1)
 	go tracker.loop()
 	return nil
@@ -188,19 +195,19 @@ func (tracker *TxTracker) Start() error {
 func (tracker *TxTracker) Stop() error {
 	close(tracker.shutdownCh)
 	tracker.wg.Wait()
-	return nil
+
+	tracker.mu.Lock()
+	var err error
+	if tracker.journal != nil {
+		err = tracker.journal.close()
+	}
+	tracker.mu.Unlock()
+	return err
 }
 
 func (tracker *TxTracker) loop() {
 	defer tracker.wg.Done()
 
-	if tracker.journal != nil {
-		tracker.journal.load(func(transactions []*types.Transaction) []error {
-			tracker.TrackAll(transactions)
-			return nil
-		})
-		defer tracker.journal.close()
-	}
 	var (
 		lastJournal = time.Now()
 		timer       = time.NewTimer(10 * time.Second) // Do initial check after 10 seconds, do rechecks more seldom.
@@ -210,19 +217,14 @@ func (tracker *TxTracker) loop() {
 		case <-tracker.shutdownCh:
 			return
 		case <-timer.C:
-			checkJournal := tracker.journal != nil && time.Since(lastJournal) > tracker.rejournal
-			resubmits, rejournal := tracker.recheck(checkJournal)
+			var rejournal bool
+			if tracker.journal != nil && time.Since(lastJournal) > tracker.rejournal {
+				rejournal, lastJournal = true, time.Now()
+				log.Debug("Rejournal the transaction tracker")
+			}
+			resubmits := tracker.recheck(rejournal)
 			if len(resubmits) > 0 {
 				tracker.pool.Add(resubmits, false)
-			}
-			if checkJournal {
-				// Lock to prevent journal.rotate <-> journal.insert (via TrackAll) conflicts
-				tracker.mu.Lock()
-				lastJournal = time.Now()
-				if err := tracker.journal.rotate(rejournal); err != nil {
-					log.Warn("Transaction journal rotation failed", "err", err)
-				}
-				tracker.mu.Unlock()
 			}
 			timer.Reset(recheckInterval)
 		}

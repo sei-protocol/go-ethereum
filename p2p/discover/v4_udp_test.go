@@ -24,10 +24,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand"
 	"net"
 	"net/netip"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -153,6 +155,23 @@ func TestUDPv4_pingTimeout(t *testing.T) {
 	node := enode.NewV4(&key.PublicKey, toaddr.IP, 0, toaddr.Port)
 	if _, err := test.udp.ping(node); err != errTimeout {
 		t.Error("expected timeout error, got", err)
+	}
+}
+
+// TestUDPv4_RequestENRNoUDPEndpoint verifies that RequestENR returns a clean
+// errNoUDPEndpoint error for a node without a usable UDP endpoint, instead of
+// silently sending a packet to the zero address and waiting for a timeout.
+// This mirrors the existing guards in ping/Ping/findnode.
+func TestUDPv4_RequestENRNoUDPEndpoint(t *testing.T) {
+	t.Parallel()
+	test := newUDPTest(t)
+	defer test.close()
+
+	key := newkey()
+	// UDP port 0 makes UDPEndpoint return ok=false.
+	node := enode.NewV4(&key.PublicKey, net.ParseIP("1.2.3.4"), 2222, 0)
+	if _, err := test.udp.RequestENR(node); !errors.Is(err, errNoUDPEndpoint) {
+		t.Errorf("expected errNoUDPEndpoint, got %v", err)
 	}
 }
 
@@ -451,6 +470,41 @@ func TestUDPv4_successfulPing(t *testing.T) {
 	}
 }
 
+// This test checks that pings from unbonded nodes do not feed the endpoint predictor.
+func TestUDPv4_pingEndpointStatementRequiresBond(t *testing.T) {
+	test := newUDPTest(t)
+	defer test.close()
+
+	var (
+		claimed = v4wire.Endpoint{IP: net.ParseIP("6.6.6.6").To4(), UDP: 6666}
+		keys    []*ecdsa.PrivateKey
+		addrs   []netip.AddrPort
+	)
+	for i := range 2 * 10 { // 2x iptrackMinStatements
+		keys = append(keys, newkey())
+		addrs = append(addrs, netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 20, 0, byte(i)}), 30303))
+	}
+	ping := &v4wire.Ping{From: testRemote, To: claimed, Version: 4, Expiration: futureExp}
+
+	// Pings from unbonded nodes must not change the local endpoint.
+	for i := range keys {
+		test.packetInFrom(nil, keys[i], addrs[i], ping)
+	}
+	if ip := test.udp.localNode.Node().IPAddr(); ip == netip.AddrFrom4([4]byte{6, 6, 6, 6}) {
+		t.Fatalf("local endpoint changed by unbonded pings: %v", ip)
+	}
+
+	// Once bonded, the statements are accepted.
+	for i := range keys {
+		id := enode.PubkeyToIDV4(&keys[i].PublicKey)
+		test.db.UpdateLastPongReceived(id, addrs[i].Addr(), time.Now())
+		test.packetInFrom(nil, keys[i], addrs[i], ping)
+	}
+	if ip := test.udp.localNode.Node().IPAddr(); ip != netip.AddrFrom4([4]byte{6, 6, 6, 6}) {
+		t.Fatalf("local endpoint not updated by bonded pings: %v", ip)
+	}
+}
+
 // This test checks that EIP-868 requests work.
 func TestUDPv4_EIP868(t *testing.T) {
 	test := newUDPTest(t)
@@ -509,18 +563,26 @@ func TestUDPv4_smallNetConvergence(t *testing.T) {
 	// they have all found each other.
 	status := make(chan error, len(nodes))
 	for i := range nodes {
-		node := nodes[i]
+		self := nodes[i]
 		go func() {
-			found := make(map[enode.ID]bool, len(nodes))
-			it := node.RandomNodes()
+			missing := make(map[enode.ID]bool, len(nodes))
+			for _, n := range nodes {
+				if n.Self().ID() == self.Self().ID() {
+					continue // skip self
+				}
+				missing[n.Self().ID()] = true
+			}
+
+			it := self.RandomNodes()
 			for it.Next() {
-				found[it.Node().ID()] = true
-				if len(found) == len(nodes) {
+				delete(missing, it.Node().ID())
+				if len(missing) == 0 {
 					status <- nil
 					return
 				}
 			}
-			status <- fmt.Errorf("node %s didn't find all nodes", node.Self().ID().TerminalString())
+			missingIDs := slices.Collect(maps.Keys(missing))
+			status <- fmt.Errorf("node %s didn't find all nodes, missing %v", self.Self().ID().TerminalString(), missingIDs)
 		}()
 	}
 
@@ -537,7 +599,6 @@ func TestUDPv4_smallNetConvergence(t *testing.T) {
 			received++
 			if err != nil {
 				t.Error("ERROR:", err)
-				return
 			}
 		}
 	}
@@ -565,6 +626,13 @@ func startLocalhostV4(t *testing.T, cfg Config) *UDPv4 {
 	udp, err := ListenV4(socket, ln, cfg)
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	// Wait for bootstrap to complete.
+	select {
+	case <-udp.tab.initDone:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for table initialization")
 	}
 	return udp
 }

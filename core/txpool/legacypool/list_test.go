@@ -71,15 +71,49 @@ func TestListAddVeryExpensive(t *testing.T) {
 	}
 }
 
-// TestListAddTotalcostOverflow tests that adding a transaction whose cost, once
-// accumulated onto the list's totalcost, would overflow 256 bits is rejected
-// rather than silently wrapping the tracked total.
+// TestPriceHeapCmp tests that the price heap comparison function works as intended.
+// It also tests combinations where the basefee is higher than the gas fee cap, which
+// are useful to sort in the mempool to support basefee changes.
+func TestPriceHeapCmp(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+	txs := []*types.Transaction{
+		// nonce, gaslimit, gasfee, gastip
+		dynamicFeeTx(0, 1000, big.NewInt(2), big.NewInt(1), key),
+		dynamicFeeTx(0, 1000, big.NewInt(1), big.NewInt(2), key),
+		dynamicFeeTx(0, 1000, big.NewInt(1), big.NewInt(1), key),
+		dynamicFeeTx(0, 1000, big.NewInt(1), big.NewInt(0), key),
+	}
+
+	// create priceHeap
+	ph := &priceHeap{}
+
+	// now set the basefee on the heap
+	for _, basefee := range []uint64{0, 1, 2, 3} {
+		ph.baseFee = uint256.NewInt(basefee)
+
+		for i := 0; i < len(txs); i++ {
+			for j := 0; j < len(txs); j++ {
+				switch {
+				case i == j:
+					if c := ph.cmp(txs[i], txs[j]); c != 0 {
+						t.Errorf("tx %d should be equal priority to tx %d with basefee %d (cmp=%d)", i, j, basefee, c)
+					}
+				case i < j:
+					if c := ph.cmp(txs[i], txs[j]); c != 1 {
+						t.Errorf("tx %d vs tx %d comparison inconsistent with basefee %d (cmp=%d)", i, j, basefee, c)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestListAddTotalcostOverflow tests that an add overflowing totalcost is rejected without mutation.
 func TestListAddTotalcostOverflow(t *testing.T) {
 	key, _ := crypto.GenerateKey()
 	list := newList(true)
 
-	// First tx: cost equal to the max uint256 value (gasLimit 0 keeps gas cost
-	// out of the equation, so cost == value).
+	// Zero gas limit makes cost equal to value.
 	tx0, _ := types.SignTx(types.NewTx(&types.LegacyTx{Nonce: 0, To: &common.Address{}, Value: math.MaxBig256, Gas: 0, GasPrice: big.NewInt(1)}), types.HomesteadSigner{}, key)
 	if added, _, err := list.Add(tx0, DefaultConfig.PriceBump); !added || err != nil {
 		t.Fatalf("expected first transaction to be added, err %v", err)
@@ -88,45 +122,39 @@ func TestListAddTotalcostOverflow(t *testing.T) {
 		t.Fatalf("totalcost mismatch after first add: have %v, want %v", list.totalcost, math.MaxBig256)
 	}
 
-	// Second tx: any positive cost added on top now overflows totalcost.
+	// Any positive cost now overflows totalcost.
 	tx1, _ := types.SignTx(types.NewTx(&types.LegacyTx{Nonce: 1, To: &common.Address{}, Value: big.NewInt(1), Gas: 0, GasPrice: big.NewInt(1)}), types.HomesteadSigner{}, key)
 	added, _, err := list.Add(tx1, DefaultConfig.PriceBump)
 	if added || !errors.Is(err, txpool.ErrTotalCostOverflow) {
 		t.Fatalf("expected overflowing transaction to be rejected with ErrTotalCostOverflow, added=%v err=%v", added, err)
 	}
-	// totalcost must be untouched by the rejected add.
 	if list.totalcost.Cmp(uint256.MustFromBig(math.MaxBig256)) != 0 {
 		t.Fatalf("totalcost corrupted by rejected add: have %v, want %v", list.totalcost, math.MaxBig256)
 	}
-	// The rejected tx must not have been stored either.
 	if list.txs.Get(1) != nil {
 		t.Fatalf("rejected transaction should not be stored in the list")
 	}
 }
 
-// TestListAddTotalCostOverflowOnReplace tests the fee-bump replacement path:
-// if applying a valid replacement (subtracting the old tx's cost and adding
-// the new one) would overflow totalcost, the replacement must be rejected
-// and totalcost/the stored tx must be left exactly as they were.
+// TestListAddTotalCostOverflowOnReplace tests that a replacement overflowing totalcost is rejected without mutation.
 func TestListAddTotalCostOverflowOnReplace(t *testing.T) {
 	key, _ := crypto.GenerateKey()
 	list := newList(true)
 
-	// Filler tx at a different nonce, pushing totalcost close to the ceiling.
+	// Filler at a different nonce pushing totalcost near the ceiling.
 	filler, _ := types.SignTx(types.NewTx(&types.LegacyTx{Nonce: 2, To: &common.Address{}, Value: new(big.Int).Sub(math.MaxBig256, big.NewInt(10)), Gas: 0, GasPrice: big.NewInt(1)}), types.HomesteadSigner{}, key)
 	if added, _, err := list.Add(filler, DefaultConfig.PriceBump); !added || err != nil {
 		t.Fatalf("expected filler transaction to be added, err %v", err)
 	}
 
-	// Original tx at nonce 0, low gas price so a fee-bumped replacement is easy to construct.
+	// Low-priced original so a fee-bumped replacement is easy to construct.
 	orig, _ := types.SignTx(types.NewTx(&types.LegacyTx{Nonce: 0, To: &common.Address{}, Value: big.NewInt(5), Gas: 0, GasPrice: big.NewInt(10)}), types.HomesteadSigner{}, key)
 	if added, _, err := list.Add(orig, DefaultConfig.PriceBump); !added || err != nil {
 		t.Fatalf("expected original transaction to be added, err %v", err)
 	}
 	totalBefore := new(uint256.Int).Set(list.totalcost)
 
-	// Replacement satisfies the fee-bump requirement (higher gas price) but its
-	// cost, once substituted for orig's, would overflow totalcost.
+	// Replacement meets the price bump but overflows totalcost.
 	replacement, _ := types.SignTx(types.NewTx(&types.LegacyTx{Nonce: 0, To: &common.Address{}, Value: big.NewInt(11), Gas: 0, GasPrice: big.NewInt(100)}), types.HomesteadSigner{}, key)
 	added, _, err := list.Add(replacement, DefaultConfig.PriceBump)
 	if added || !errors.Is(err, txpool.ErrTotalCostOverflow) {
@@ -140,9 +168,7 @@ func TestListAddTotalCostOverflowOnReplace(t *testing.T) {
 	}
 }
 
-// TestListAddTotalCostReplacementNearMax verifies that a replacement near the
-// uint256 ceiling updates totalcost using the same subtract-old-then-add-new
-// projection validated by projectedTotalCost, not a wrapping add-first path.
+// TestListAddTotalCostReplacementNearMax tests that a replacement near the uint256 ceiling updates totalcost correctly.
 func TestListAddTotalCostReplacementNearMax(t *testing.T) {
 	key, _ := crypto.GenerateKey()
 	list := newList(true)
@@ -169,10 +195,7 @@ func TestListAddTotalCostReplacementNearMax(t *testing.T) {
 	}
 
 	want := uint256.MustFromBig(math.MaxBig256)
-	_, underflow := want.SubOverflow(want, uint256.NewInt(60))
-	if underflow {
-		t.Fatal("unexpected underflow building want totalcost")
-	}
+	want.Sub(want, uint256.NewInt(60))
 	if list.totalcost.Cmp(want) != 0 {
 		t.Fatalf("totalcost mismatch after near-max replacement: have %v, want %v", list.totalcost, want)
 	}

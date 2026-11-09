@@ -17,6 +17,7 @@
 package core
 
 import (
+	"runtime"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/core/types"
@@ -24,7 +25,7 @@ import (
 
 // senderCacherOnce is used to ensure that the SenderCacher is initialized only once.
 var senderCacherOnce = sync.OnceValue(func() *txSenderCacher {
-	return newTxSenderCacher(0)
+	return newTxSenderCacher(runtime.NumCPU())
 })
 
 // SenderCacher returns the singleton instance of SenderCacher, initializing it if called for the first time.

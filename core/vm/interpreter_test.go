@@ -14,17 +14,18 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package vm_test
+package vm
 
 import (
 	"math"
+	"math/big"
 	"testing"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
 )
@@ -38,23 +39,23 @@ var loopInterruptTests = []string{
 
 func TestLoopInterrupt(t *testing.T) {
 	address := common.BytesToAddress([]byte("contract"))
-	vmctx := vm.BlockContext{
-		Transfer: func(vm.StateDB, common.Address, common.Address, *uint256.Int) {},
+	vmctx := BlockContext{
+		Transfer: func(StateDB, common.Address, common.Address, *uint256.Int, *params.Rules) {},
 	}
 
 	for i, tt := range loopInterruptTests {
 		statedb, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
 		statedb.CreateAccount(address)
-		statedb.SetCode(address, common.Hex2Bytes(tt))
-		statedb.Finalise(true)
+		statedb.SetCode(address, common.Hex2Bytes(tt), tracing.CodeChangeUnspecified)
+		statedb.Finalise(params.Rules{IsEIP158: true})
 
-		evm := vm.NewEVM(vmctx, statedb, params.AllEthashProtocolChanges, vm.Config{}, nil)
+		evm := NewEVM(vmctx, statedb, params.AllEthashProtocolChanges, Config{})
 
 		errChannel := make(chan error)
 		timeout := make(chan bool)
 
-		go func(evm *vm.EVM) {
-			_, _, err := evm.Call(common.Address{}, address, nil, math.MaxUint64, new(uint256.Int))
+		go func(evm *EVM) {
+			_, _, err := evm.Call(common.Address{}, address, nil, NewGasBudget(math.MaxUint64, 0), new(uint256.Int))
 			errChannel <- err
 		}(evm)
 
@@ -73,5 +74,23 @@ func TestLoopInterrupt(t *testing.T) {
 				t.Errorf("test %d failure: %v", i, err)
 			}
 		}
+	}
+}
+
+func BenchmarkInterpreter(b *testing.B) {
+	var (
+		statedb, _        = state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
+		evm               = NewEVM(BlockContext{BlockNumber: big.NewInt(1), Time: 1, Random: &common.Hash{}}, statedb, params.MergedTestChainConfig, Config{})
+		startGas   uint64 = 100_000_000
+		value             = uint256.NewInt(0)
+		stack             = newStackForTesting()
+		mem               = NewMemory()
+		contract          = NewContract(common.Address{}, common.Address{}, value, NewGasBudget(startGas, 0), nil)
+	)
+	stack.push(uint256.NewInt(123))
+	stack.push(uint256.NewInt(123))
+	gasSStoreEIP3529 = makeGasSStoreFunc(params.SstoreClearsScheduleRefundEIP3529)
+	for b.Loop() {
+		gasSStoreEIP3529(evm, contract, stack, mem, 1234)
 	}
 }

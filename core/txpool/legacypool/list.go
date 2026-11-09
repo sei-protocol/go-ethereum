@@ -296,10 +296,8 @@ func (l *list) Contains(nonce uint64) bool {
 	return l.txs.Get(nonce) != nil
 }
 
-// projectedTotalCost computes the list's total cost after inserting tx, checking
-// for uint256 overflow/underflow. It ignores fee-bump requirements. When old is
-// non-nil it is treated as the transaction at tx's nonce (typically the caller's
-// cached l.txs.Get result). cost is tx's cost as uint256 on success.
+// projectedTotalCost returns the list's total cost with tx replacing old (if any)
+// and tx's cost, ignoring fee-bump requirements.
 func (l *list) projectedTotalCost(tx *types.Transaction, old *types.Transaction) (projected, cost *uint256.Int, err error) {
 	cost, overflow := uint256.FromBig(tx.Cost())
 	if overflow {
@@ -318,7 +316,7 @@ func (l *list) projectedTotalCost(tx *types.Transaction, old *types.Transaction)
 }
 
 // addCostOverflow returns ErrTotalCostOverflow if inserting tx would overflow
-// the list's tracked total cost. It ignores fee-bump requirements.
+// the list's total cost, ignoring fee-bump requirements.
 func (l *list) addCostOverflow(tx *types.Transaction) error {
 	_, _, err := l.projectedTotalCost(tx, l.txs.Get(tx.Nonce()))
 	return err
@@ -501,7 +499,7 @@ func (l *list) subTotalCost(txs []*types.Transaction) {
 // then the heap is sorted based on the effective tip based on the given base fee.
 // If baseFee is nil then the sorting is based on gasFeeCap.
 type priceHeap struct {
-	baseFee *big.Int // heap should always be re-sorted after baseFee is changed
+	baseFee *uint256.Int // heap should always be re-sorted after baseFee is changed
 	list    []*types.Transaction
 }
 
@@ -703,6 +701,10 @@ func (l *pricedList) Reheap() {
 // SetBaseFee updates the base fee and triggers a re-heap. Note that Removed is not
 // necessary to call right before SetBaseFee when processing a new block.
 func (l *pricedList) SetBaseFee(baseFee *big.Int) {
-	l.urgent.baseFee = baseFee
+	base := new(uint256.Int)
+	if baseFee != nil {
+		base.SetFromBig(baseFee)
+	}
+	l.urgent.baseFee = base
 	l.Reheap()
 }

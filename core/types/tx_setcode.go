@@ -42,7 +42,7 @@ func IsDelegationDesignatorLength(n int) bool {
 
 // ParseDelegation tries to parse the address from a delegation slice.
 func ParseDelegation(b []byte) (common.Address, bool) {
-	if !IsDelegationDesignatorLength(len(b)) || !bytes.HasPrefix(b, DelegationPrefix) {
+	if len(b) != 23 || !bytes.HasPrefix(b, DelegationPrefix) {
 		return common.Address{}, false
 	}
 	return common.BytesToAddress(b[len(DelegationPrefix):]), true
@@ -89,14 +89,37 @@ type SetCodeAuthorization struct {
 type authorizationMarshaling struct {
 	ChainID hexutil.U256
 	Nonce   hexutil.Uint64
-	V       hexutil.Uint64
+	V       yParityJSON
 	R       hexutil.U256
 	S       hexutil.U256
 }
 
+// yParityJSON is the JSON encoding of an authorization's y-parity: a hex
+// quantity restricted to 0 or 1. Decoding through hexutil.Uint64 alone would
+// silently truncate anything larger into the uint8 field.
+type yParityJSON uint8
+
+// MarshalText implements encoding.TextMarshaler.
+func (y yParityJSON) MarshalText() ([]byte, error) {
+	return hexutil.Uint64(y).MarshalText()
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (y *yParityJSON) UnmarshalJSON(input []byte) error {
+	var v hexutil.Uint64
+	if err := v.UnmarshalJSON(input); err != nil {
+		return err
+	}
+	if v > 1 {
+		return errInvalidYParity
+	}
+	*y = yParityJSON(v)
+	return nil
+}
+
 // SignSetCode creates a signed the SetCode authorization.
 func SignSetCode(prv *ecdsa.PrivateKey, auth SetCodeAuthorization) (SetCodeAuthorization, error) {
-	sighash := auth.sigHash()
+	sighash := auth.SigHash()
 	sig, err := crypto.Sign(sighash[:], prv)
 	if err != nil {
 		return SetCodeAuthorization{}, err
@@ -115,7 +138,8 @@ func SignSetCode(prv *ecdsa.PrivateKey, auth SetCodeAuthorization) (SetCodeAutho
 	}, nil
 }
 
-func (a *SetCodeAuthorization) sigHash() common.Hash {
+// SigHash returns the hash of SetCodeAuthorization for signing.
+func (a *SetCodeAuthorization) SigHash() common.Hash {
 	return prefixedRlpHash(0x05, []any{
 		a.ChainID,
 		a.Address,
@@ -125,7 +149,7 @@ func (a *SetCodeAuthorization) sigHash() common.Hash {
 
 // Authority recovers the the authorizing account of an authorization.
 func (a *SetCodeAuthorization) Authority() (common.Address, error) {
-	sighash := a.sigHash()
+	sighash := a.SigHash()
 	if !crypto.ValidateSignatureValues(a.V, a.R.ToBig(), a.S.ToBig(), true) {
 		return common.Address{}, ErrInvalidSig
 	}

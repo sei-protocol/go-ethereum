@@ -18,11 +18,11 @@ package types
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/holiman/uint256"
-	"github.com/stretchr/testify/require"
 )
 
 // TestParseDelegation tests a few possible delegation designator values and
@@ -72,16 +72,35 @@ func TestParseDelegation(t *testing.T) {
 	}
 }
 
-func TestParseSetCodeAuthorization(t *testing.T) {
-	s := "{\"chainId\":\"0x1\",\"address\":\"0x4517e44cC1762e589296DF61931Ae19B1DA14e32\",\"nonce\":\"0x0\",\"yParity\":\"0x1\",\"r\":\"0x445ef4a54b14eb5820ae1a2f7ab15c41c1f61a3fa4b8630675b58aa8ebf8965c\",\"s\":\"0x0c733d6be254eef8d13d3715fa7807b710336093a6ef12dc7e9d32f633250373\"}"
-	sca := SetCodeAuthorization{}
-	require.Nil(t, json.Unmarshal([]byte(s), &sca))
-	require.Equal(t, SetCodeAuthorization{
-		ChainID: *uint256.NewInt(1),
-		Address: common.HexToAddress("0x4517e44cC1762e589296DF61931Ae19B1DA14e32"),
-		Nonce:   0,
-		V:       1,
-		R:       *uint256.MustFromHex("0x445ef4a54b14eb5820ae1a2f7ab15c41c1f61a3fa4b8630675b58aa8ebf8965c"),
-		S:       *uint256.MustFromHex("0xc733d6be254eef8d13d3715fa7807b710336093a6ef12dc7e9d32f633250373"),
-	}, sca)
+// TestSetCodeAuthorizationJSONYParity checks that the yParity field of an
+// authorization is restricted to 0 or 1 when decoded from JSON, matching the
+// transaction-level yParity handling, instead of being truncated into uint8.
+func TestSetCodeAuthorizationJSONYParity(t *testing.T) {
+	for _, tt := range []struct {
+		yParity string
+		want    uint8
+		wantErr error
+	}{
+		{"0x0", 0, nil},
+		{"0x1", 1, nil},
+		{"0x2", 0, errInvalidYParity},
+		{"0x100", 0, errInvalidYParity},
+	} {
+		input := `{"chainId":"0x1","address":"0x0000000000000000000000000000000000000001","nonce":"0x0","yParity":"` + tt.yParity + `","r":"0x1","s":"0x1"}`
+		var auth SetCodeAuthorization
+		err := json.Unmarshal([]byte(input), &auth)
+		if !errors.Is(err, tt.wantErr) {
+			t.Errorf("yParity %s: error %v, want %v", tt.yParity, err, tt.wantErr)
+			continue
+		}
+		if err == nil && auth.V != tt.want {
+			t.Errorf("yParity %s: V = %d, want %d", tt.yParity, auth.V, tt.want)
+		}
+		if err == nil {
+			out, _ := json.Marshal(auth)
+			if !strings.Contains(string(out), `"yParity":"`+tt.yParity+`"`) {
+				t.Errorf("yParity %s: round trip produced %s", tt.yParity, out)
+			}
+		}
+	}
 }

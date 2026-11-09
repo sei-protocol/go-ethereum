@@ -536,7 +536,7 @@ func TestWSBudgetWaitTimeoutOnActiveBurst(t *testing.T) {
 		if err := json.Unmarshal(data, &resp); err != nil {
 			continue
 		}
-		if resp.Error != nil && resp.Error.Code == errcodeBudgetWaitTimeout {
+		if resp.Error != nil && resp.decodeError().Code == errcodeBudgetWaitTimeout {
 			foundBudgetTimeoutResp = true
 			break
 		}
@@ -735,13 +735,12 @@ func TestFrameBudgetExceededResponse(t *testing.T) {
 	notification := &jsonrpcMessage{Version: vsn, Method: "test_method"}
 
 	t.Run("call", func(t *testing.T) {
-		resp := frameBudgetExceededResponse([]*jsonrpcMessage{call}, false)
-		msg, ok := resp.(*jsonrpcMessage)
-		if !ok {
-			t.Fatalf("expected *jsonrpcMessage, got %T", resp)
+		msg := frameBudgetExceededResponse([]*jsonrpcMessage{call}, false)
+		if msg == nil {
+			t.Fatal("expected a response for a call")
 		}
-		if msg.Error == nil || msg.Error.Code != errcodeRequestTooLarge {
-			t.Fatalf("expected error code %d, got %+v", errcodeRequestTooLarge, msg.Error)
+		if msg.Error == nil || msg.decodeError().Code != errcodeRequestTooLarge {
+			t.Fatalf("expected error code %d, got %s", errcodeRequestTooLarge, msg.Error)
 		}
 		if string(msg.ID) != string(call.ID) {
 			t.Fatalf("expected response id %s, got %s", call.ID, msg.ID)
@@ -756,12 +755,12 @@ func TestFrameBudgetExceededResponse(t *testing.T) {
 
 	t.Run("batch", func(t *testing.T) {
 		resp := frameBudgetExceededResponse([]*jsonrpcMessage{notification, call}, true)
-		batch, ok := resp.([]*jsonrpcMessage)
-		if !ok || len(batch) != 1 {
-			t.Fatalf("expected a single-element batch response, got %T: %v", resp, resp)
+		if resp == nil {
+			t.Fatal("expected a response for a batch")
 		}
-		if batch[0].Error == nil || batch[0].Error.Code != errcodeRequestTooLarge {
-			t.Fatalf("expected error code %d, got %+v", errcodeRequestTooLarge, batch[0].Error)
+		batch := []*jsonrpcMessage{resp}
+		if batch[0].Error == nil || batch[0].decodeError().Code != errcodeRequestTooLarge {
+			t.Fatalf("expected error code %d, got %s", errcodeRequestTooLarge, batch[0].Error)
 		}
 		if string(batch[0].ID) != string(call.ID) {
 			t.Fatalf("expected response tagged with the call's id %s, got %s", call.ID, batch[0].ID)
@@ -770,10 +769,10 @@ func TestFrameBudgetExceededResponse(t *testing.T) {
 
 	t.Run("batch with no calls", func(t *testing.T) {
 		resp := frameBudgetExceededResponse([]*jsonrpcMessage{notification}, true)
-		batch, ok := resp.([]*jsonrpcMessage)
-		if !ok || len(batch) != 1 {
-			t.Fatalf("expected a single-element batch response, got %T: %v", resp, resp)
+		if resp == nil {
+			t.Fatal("expected a response for a batch")
 		}
+		batch := []*jsonrpcMessage{resp}
 		if string(batch[0].ID) != string(null) {
 			t.Fatalf("expected null id when no call is present, got %s", batch[0].ID)
 		}
@@ -783,9 +782,12 @@ func TestFrameBudgetExceededResponse(t *testing.T) {
 // stubJSONWriter satisfies jsonWriter for handler unit tests.
 type stubJSONWriter struct{}
 
-func (stubJSONWriter) writeJSON(context.Context, interface{}, bool) error { return nil }
-func (stubJSONWriter) closed() <-chan interface{}                         { return make(chan interface{}) }
-func (stubJSONWriter) remoteAddr() string                                 { return "" }
+func (stubJSONWriter) writeJSON(context.Context, *jsonrpcMessage, bool) error { return nil }
+func (stubJSONWriter) writeJSONBatch(context.Context, []*jsonrpcMessage, bool) error {
+	return nil
+}
+func (stubJSONWriter) closed() <-chan interface{} { return make(chan interface{}) }
+func (stubJSONWriter) remoteAddr() string         { return "" }
 
 func newAdmissionTestHandler(budget int64, readLimit int64, timeout time.Duration, hook func(string)) *handler {
 	return newHandler(
@@ -794,11 +796,13 @@ func newAdmissionTestHandler(budget int64, readLimit int64, timeout time.Duratio
 		sequentialIDGenerator(),
 		new(serviceRegistry),
 		0, 0,
-		semaphore.NewWeighted(budget),
-		readLimit,
-		hook,
-		timeout,
 		nil,
+		handlerSeiConfig{
+			wsConcurrentBudget: semaphore.NewWeighted(budget),
+			readLimit:          readLimit,
+			admissionEventHook: hook,
+			wsAdmissionTimeout: timeout,
+		},
 	)
 }
 

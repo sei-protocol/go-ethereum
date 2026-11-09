@@ -23,15 +23,19 @@ import (
 )
 
 type (
-	ExecutionFunc func(pc *uint64, interpreter *EVMInterpreter, callContext *ScopeContext) ([]byte, error)
-	gasFunc       func(*EVM, *Contract, *Stack, *Memory, uint64) (uint64, error) // last parameter is the requested memory size as a uint64
+	executionFunc    func(pc *uint64, evm *EVM, callContext *ScopeContext) ([]byte, error)
+	gasFunc          func(*EVM, *Contract, *Stack, *Memory, uint64) (GasCosts, error) // last parameter is the requested memory size as a uint64
+	intrinsicGasFunc func(*EVM, *Contract, *Stack, *Memory, uint64) (uint64, error)   // last parameter is the requested memory size as a uint64
 	// memorySizeFunc returns the required size, and whether the operation overflowed a uint64
 	memorySizeFunc func(*Stack) (size uint64, overflow bool)
+
+	executionGasFunc func(*EVM, *Contract, *Stack, *Memory, uint64) (uint64, error)
+	stateGasFunc     func(*EVM, *Contract, *Stack) (uint64, error)
 )
 
 type operation struct {
 	// execute is the operation function
-	execute     ExecutionFunc
+	execute     executionFunc
 	constantGas uint64
 	dynamicGas  gasFunc
 	// minStack tells how many stack items are required
@@ -47,14 +51,6 @@ type operation struct {
 	undefined bool
 }
 
-func (o *operation) GetConstantGas() uint64 {
-	return o.constantGas
-}
-
-func (o *operation) SetConstantGas(cg uint64) {
-	o.constantGas = cg
-}
-
 var (
 	frontierInstructionSet         = newFrontierInstructionSet()
 	homesteadInstructionSet        = newHomesteadInstructionSet()
@@ -65,12 +61,14 @@ var (
 	istanbulInstructionSet         = newIstanbulInstructionSet()
 	berlinInstructionSet           = newBerlinInstructionSet()
 	londonInstructionSet           = newLondonInstructionSet()
-	mergeInstructionSet            = NewMergeInstructionSet()
+	mergeInstructionSet            = newMergeInstructionSet()
 	shanghaiInstructionSet         = newShanghaiInstructionSet()
 	cancunInstructionSet           = newCancunInstructionSet()
 	verkleInstructionSet           = newVerkleInstructionSet()
-	PragueInstructionSet           = newPragueInstructionSet()
-	EofInstructionSet              = newEOFInstructionSetForTesting()
+	pragueInstructionSet           = newPragueInstructionSet()
+	osakaInstructionSet            = newOsakaInstructionSet()
+	amsterdamInstructionSet        = newAmsterdamInstructionSet()
+	bogotaInstructionSet           = newBogotaInstructionSet()
 )
 
 // JumpTable contains the EVM opcodes supported at a given fork.
@@ -94,19 +92,28 @@ func validate(jt JumpTable) JumpTable {
 	return jt
 }
 
+func newBogotaInstructionSet() JumpTable {
+	instructionSet := newAmsterdamInstructionSet()
+	return validate(instructionSet)
+}
+
 func newVerkleInstructionSet() JumpTable {
 	instructionSet := newShanghaiInstructionSet()
 	enable4762(&instructionSet)
 	return validate(instructionSet)
 }
 
-func NewEOFInstructionSetForTesting() JumpTable {
-	return newEOFInstructionSetForTesting()
+func newAmsterdamInstructionSet() JumpTable {
+	instructionSet := newOsakaInstructionSet()
+	enable7843(&instructionSet)        // EIP-7843 (SLOTNUM opcode)
+	enable8024(&instructionSet)        // EIP-8024 (Backward compatible SWAPN, DUPN, EXCHANGE)
+	enable8037And8038(&instructionSet) // EIP-8037 (state-gas metering) + EIP-8038 (state-access repricing)
+	return validate(instructionSet)
 }
 
-func newEOFInstructionSetForTesting() JumpTable {
+func newOsakaInstructionSet() JumpTable {
 	instructionSet := newPragueInstructionSet()
-	enableEOF(&instructionSet)
+	enable7939(&instructionSet) // EIP-7939 (CLZ opcode)
 	return validate(instructionSet)
 }
 
@@ -127,17 +134,17 @@ func newCancunInstructionSet() JumpTable {
 }
 
 func newShanghaiInstructionSet() JumpTable {
-	instructionSet := NewMergeInstructionSet()
+	instructionSet := newMergeInstructionSet()
 	enable3855(&instructionSet) // PUSH0 instruction
 	enable3860(&instructionSet) // Limit and meter initcode
 
 	return validate(instructionSet)
 }
 
-func NewMergeInstructionSet() JumpTable {
+func newMergeInstructionSet() JumpTable {
 	instructionSet := newLondonInstructionSet()
 	instructionSet[PREVRANDAO] = &operation{
-		execute:     OpRandom,
+		execute:     opRandom,
 		constantGas: GasQuickStep,
 		minStack:    minStack(0, 1),
 		maxStack:    maxStack(0, 1),
@@ -179,19 +186,19 @@ func newIstanbulInstructionSet() JumpTable {
 func newConstantinopleInstructionSet() JumpTable {
 	instructionSet := newByzantiumInstructionSet()
 	instructionSet[SHL] = &operation{
-		execute:     OpSHL,
+		execute:     opSHL,
 		constantGas: GasFastestStep,
 		minStack:    minStack(2, 1),
 		maxStack:    maxStack(2, 1),
 	}
 	instructionSet[SHR] = &operation{
-		execute:     OpSHR,
+		execute:     opSHR,
 		constantGas: GasFastestStep,
 		minStack:    minStack(2, 1),
 		maxStack:    maxStack(2, 1),
 	}
 	instructionSet[SAR] = &operation{
-		execute:     OpSAR,
+		execute:     opSAR,
 		constantGas: GasFastestStep,
 		minStack:    minStack(2, 1),
 		maxStack:    maxStack(2, 1),
@@ -295,121 +302,121 @@ func newFrontierInstructionSet() JumpTable {
 			maxStack:    maxStack(0, 0),
 		},
 		ADD: {
-			execute:     OpAdd,
+			execute:     opAdd,
 			constantGas: GasFastestStep,
 			minStack:    minStack(2, 1),
 			maxStack:    maxStack(2, 1),
 		},
 		MUL: {
-			execute:     OpMul,
+			execute:     opMul,
 			constantGas: GasFastStep,
 			minStack:    minStack(2, 1),
 			maxStack:    maxStack(2, 1),
 		},
 		SUB: {
-			execute:     OpSub,
+			execute:     opSub,
 			constantGas: GasFastestStep,
 			minStack:    minStack(2, 1),
 			maxStack:    maxStack(2, 1),
 		},
 		DIV: {
-			execute:     OpDiv,
+			execute:     opDiv,
 			constantGas: GasFastStep,
 			minStack:    minStack(2, 1),
 			maxStack:    maxStack(2, 1),
 		},
 		SDIV: {
-			execute:     OpSdiv,
+			execute:     opSdiv,
 			constantGas: GasFastStep,
 			minStack:    minStack(2, 1),
 			maxStack:    maxStack(2, 1),
 		},
 		MOD: {
-			execute:     OpMod,
+			execute:     opMod,
 			constantGas: GasFastStep,
 			minStack:    minStack(2, 1),
 			maxStack:    maxStack(2, 1),
 		},
 		SMOD: {
-			execute:     OpSmod,
+			execute:     opSmod,
 			constantGas: GasFastStep,
 			minStack:    minStack(2, 1),
 			maxStack:    maxStack(2, 1),
 		},
 		ADDMOD: {
-			execute:     OpAddmod,
+			execute:     opAddmod,
 			constantGas: GasMidStep,
 			minStack:    minStack(3, 1),
 			maxStack:    maxStack(3, 1),
 		},
 		MULMOD: {
-			execute:     OpMulmod,
+			execute:     opMulmod,
 			constantGas: GasMidStep,
 			minStack:    minStack(3, 1),
 			maxStack:    maxStack(3, 1),
 		},
 		EXP: {
-			execute:    OpExp,
+			execute:    opExp,
 			dynamicGas: gasExpFrontier,
 			minStack:   minStack(2, 1),
 			maxStack:   maxStack(2, 1),
 		},
 		SIGNEXTEND: {
-			execute:     OpSignExtend,
+			execute:     opSignExtend,
 			constantGas: GasFastStep,
 			minStack:    minStack(2, 1),
 			maxStack:    maxStack(2, 1),
 		},
 		LT: {
-			execute:     OpLt,
+			execute:     opLt,
 			constantGas: GasFastestStep,
 			minStack:    minStack(2, 1),
 			maxStack:    maxStack(2, 1),
 		},
 		GT: {
-			execute:     OpGt,
+			execute:     opGt,
 			constantGas: GasFastestStep,
 			minStack:    minStack(2, 1),
 			maxStack:    maxStack(2, 1),
 		},
 		SLT: {
-			execute:     OpSlt,
+			execute:     opSlt,
 			constantGas: GasFastestStep,
 			minStack:    minStack(2, 1),
 			maxStack:    maxStack(2, 1),
 		},
 		SGT: {
-			execute:     OpSgt,
+			execute:     opSgt,
 			constantGas: GasFastestStep,
 			minStack:    minStack(2, 1),
 			maxStack:    maxStack(2, 1),
 		},
 		EQ: {
-			execute:     OpEq,
+			execute:     opEq,
 			constantGas: GasFastestStep,
 			minStack:    minStack(2, 1),
 			maxStack:    maxStack(2, 1),
 		},
 		ISZERO: {
-			execute:     OpIszero,
+			execute:     opIszero,
 			constantGas: GasFastestStep,
 			minStack:    minStack(1, 1),
 			maxStack:    maxStack(1, 1),
 		},
 		AND: {
-			execute:     OpAnd,
+			execute:     opAnd,
 			constantGas: GasFastestStep,
 			minStack:    minStack(2, 1),
 			maxStack:    maxStack(2, 1),
 		},
 		XOR: {
-			execute:     OpXor,
+			execute:     opXor,
 			constantGas: GasFastestStep,
 			minStack:    minStack(2, 1),
 			maxStack:    maxStack(2, 1),
 		},
 		OR: {
-			execute:     OpOr,
+			execute:     opOr,
 			constantGas: GasFastestStep,
 			minStack:    minStack(2, 1),
 			maxStack:    maxStack(2, 1),
@@ -421,13 +428,13 @@ func newFrontierInstructionSet() JumpTable {
 			maxStack:    maxStack(1, 1),
 		},
 		BYTE: {
-			execute:     OpByte,
+			execute:     opByte,
 			constantGas: GasFastestStep,
 			minStack:    minStack(2, 1),
 			maxStack:    maxStack(2, 1),
 		},
 		KECCAK256: {
-			execute:     OpKeccak256,
+			execute:     opKeccak256,
 			constantGas: params.Keccak256Gas,
 			dynamicGas:  gasKeccak256,
 			minStack:    minStack(2, 1),
@@ -435,7 +442,7 @@ func newFrontierInstructionSet() JumpTable {
 			memorySize:  memoryKeccak256,
 		},
 		ADDRESS: {
-			execute:     OpAddress,
+			execute:     opAddress,
 			constantGas: GasQuickStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
@@ -447,7 +454,7 @@ func newFrontierInstructionSet() JumpTable {
 			maxStack:    maxStack(1, 1),
 		},
 		ORIGIN: {
-			execute:     OpOrigin,
+			execute:     opOrigin,
 			constantGas: GasQuickStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
@@ -569,7 +576,7 @@ func newFrontierInstructionSet() JumpTable {
 			memorySize:  memoryMLoad,
 		},
 		MSTORE: {
-			execute:     OpMstore,
+			execute:     opMstore,
 			constantGas: GasFastestStep,
 			dynamicGas:  gasMStore,
 			minStack:    minStack(2, 0),
@@ -577,7 +584,7 @@ func newFrontierInstructionSet() JumpTable {
 			memorySize:  memoryMStore,
 		},
 		MSTORE8: {
-			execute:     OpMstore8,
+			execute:     opMstore8,
 			constantGas: GasFastestStep,
 			dynamicGas:  gasMStore8,
 			memorySize:  memoryMStore8,
@@ -639,283 +646,283 @@ func newFrontierInstructionSet() JumpTable {
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH2: {
-			execute:     MakePush(2, 2),
+			execute:     opPush2,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH3: {
-			execute:     MakePush(3, 3),
+			execute:     opPush3,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH4: {
-			execute:     MakePush(4, 4),
+			execute:     opPush4,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH5: {
-			execute:     MakePush(5, 5),
+			execute:     opPush5,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH6: {
-			execute:     MakePush(6, 6),
+			execute:     opPush6,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH7: {
-			execute:     MakePush(7, 7),
+			execute:     opPush7,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH8: {
-			execute:     MakePush(8, 8),
+			execute:     opPush8,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH9: {
-			execute:     MakePush(9, 9),
+			execute:     opPush9,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH10: {
-			execute:     MakePush(10, 10),
+			execute:     opPush10,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH11: {
-			execute:     MakePush(11, 11),
+			execute:     opPush11,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH12: {
-			execute:     MakePush(12, 12),
+			execute:     opPush12,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH13: {
-			execute:     MakePush(13, 13),
+			execute:     opPush13,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH14: {
-			execute:     MakePush(14, 14),
+			execute:     opPush14,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH15: {
-			execute:     MakePush(15, 15),
+			execute:     opPush15,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH16: {
-			execute:     MakePush(16, 16),
+			execute:     opPush16,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH17: {
-			execute:     MakePush(17, 17),
+			execute:     opPush17,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH18: {
-			execute:     MakePush(18, 18),
+			execute:     opPush18,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH19: {
-			execute:     MakePush(19, 19),
+			execute:     opPush19,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH20: {
-			execute:     MakePush(20, 20),
+			execute:     opPush20,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH21: {
-			execute:     MakePush(21, 21),
+			execute:     opPush21,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH22: {
-			execute:     MakePush(22, 22),
+			execute:     opPush22,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH23: {
-			execute:     MakePush(23, 23),
+			execute:     opPush23,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH24: {
-			execute:     MakePush(24, 24),
+			execute:     opPush24,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH25: {
-			execute:     MakePush(25, 25),
+			execute:     opPush25,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH26: {
-			execute:     MakePush(26, 26),
+			execute:     opPush26,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH27: {
-			execute:     MakePush(27, 27),
+			execute:     opPush27,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH28: {
-			execute:     MakePush(28, 28),
+			execute:     opPush28,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH29: {
-			execute:     MakePush(29, 29),
+			execute:     opPush29,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH30: {
-			execute:     MakePush(30, 30),
+			execute:     opPush30,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH31: {
-			execute:     MakePush(31, 31),
+			execute:     opPush31,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		PUSH32: {
-			execute:     MakePush(32, 32),
+			execute:     opPush32,
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 		},
 		DUP1: {
-			execute:     makeDup(1),
+			execute:     opDup1,
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(1),
 			maxStack:    maxDupStack(1),
 		},
 		DUP2: {
-			execute:     makeDup(2),
+			execute:     opDup2,
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(2),
 			maxStack:    maxDupStack(2),
 		},
 		DUP3: {
-			execute:     makeDup(3),
+			execute:     opDup3,
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(3),
 			maxStack:    maxDupStack(3),
 		},
 		DUP4: {
-			execute:     makeDup(4),
+			execute:     opDup4,
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(4),
 			maxStack:    maxDupStack(4),
 		},
 		DUP5: {
-			execute:     makeDup(5),
+			execute:     opDup5,
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(5),
 			maxStack:    maxDupStack(5),
 		},
 		DUP6: {
-			execute:     makeDup(6),
+			execute:     opDup6,
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(6),
 			maxStack:    maxDupStack(6),
 		},
 		DUP7: {
-			execute:     makeDup(7),
+			execute:     opDup7,
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(7),
 			maxStack:    maxDupStack(7),
 		},
 		DUP8: {
-			execute:     makeDup(8),
+			execute:     opDup8,
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(8),
 			maxStack:    maxDupStack(8),
 		},
 		DUP9: {
-			execute:     makeDup(9),
+			execute:     opDup9,
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(9),
 			maxStack:    maxDupStack(9),
 		},
 		DUP10: {
-			execute:     makeDup(10),
+			execute:     opDup10,
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(10),
 			maxStack:    maxDupStack(10),
 		},
 		DUP11: {
-			execute:     makeDup(11),
+			execute:     opDup11,
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(11),
 			maxStack:    maxDupStack(11),
 		},
 		DUP12: {
-			execute:     makeDup(12),
+			execute:     opDup12,
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(12),
 			maxStack:    maxDupStack(12),
 		},
 		DUP13: {
-			execute:     makeDup(13),
+			execute:     opDup13,
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(13),
 			maxStack:    maxDupStack(13),
 		},
 		DUP14: {
-			execute:     makeDup(14),
+			execute:     opDup14,
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(14),
 			maxStack:    maxDupStack(14),
 		},
 		DUP15: {
-			execute:     makeDup(15),
+			execute:     opDup15,
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(15),
 			maxStack:    maxDupStack(15),
 		},
 		DUP16: {
-			execute:     makeDup(16),
+			execute:     opDup16,
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(16),
 			maxStack:    maxDupStack(16),
@@ -1105,7 +1112,7 @@ func newFrontierInstructionSet() JumpTable {
 	return validate(tbl)
 }
 
-func CopyJumpTable(source *JumpTable) *JumpTable {
+func copyJumpTable(source *JumpTable) *JumpTable {
 	dest := *source
 	for i, op := range source {
 		if op != nil {
