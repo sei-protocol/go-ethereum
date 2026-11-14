@@ -1048,7 +1048,7 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 		}
 	}
 	tracingStateDB := state.NewHookedState(statedb, tracer.Hooks)
-	evm := api.newEVM(vmctx, tracingStateDB, vmctx.BlockNumber.Int64(), vm.Config{Tracer: tracer.Hooks, NoBaseFee: true})
+	evm := api.newEVM(vmctx, tracingStateDB, vmctx.BlockNumber.Int64(), vm.Config{Tracer: WithoutFailedTxEnd(tracer.Hooks), NoBaseFee: true})
 	defer evm.Release()
 
 	if precompiles != nil {
@@ -1082,7 +1082,15 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 	}
 	_, _, err = core.ApplyTransactionWithEVM(ctx, message, core.NewGasPool(message.GasLimit), statedb, vmctx.BlockNumber, txctx.BlockHash, vmctx.Time, tx, evm)
 	if err != nil {
-		return errorTrace(err, tx, message, txctx, vmctx, config)
+		gasUsed, ended := api.endFailedTx(tracer.Hooks, tracingStateDB, tx, message, txctx, err)
+		if !ended {
+			return errorTrace(err, tx, message, txctx, vmctx, config)
+		}
+		// The call tracers keep reporting the frame they report for any failure before
+		// execution, rather than the one they built from the ended transaction.
+		if frame, frameErr := ErrorFrame(err, tx, message, txctx, config, gasUsed); frame != nil || frameErr != nil {
+			return frame, frameErr
+		}
 	}
 	tracerMtx.Lock()
 	res, err := tracer.GetResult()
