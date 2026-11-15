@@ -1083,7 +1083,8 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 			value, returnErr = errorTrace(fmt.Errorf("%s", r), tx, message, txctx, vmctx, config)
 		}
 		// if nonce isn't bumped because of tracing error, bump it here, as it may be needed
-		// for subsequent transactions in the same block being traced.
+		// for subsequent transactions in the same block being traced. EndFailedTx bumps it
+		// itself for a transaction it ends.
 		nonce := statedb.GetNonce(message.From)
 		if nonce == startingNonce {
 			statedb.SetNonce(message.From, nonce+1, tracing.NonceChangeUnspecified)
@@ -1148,7 +1149,8 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 			return errorTrace(err, tx, message, txctx, vmctx, config)
 		}
 		// The call tracers keep reporting the frame they report for any failure before
-		// execution, rather than the one they built from the ended transaction.
+		// execution, rather than the one they built from the ended transaction, which is
+		// the frame they report inside muxTracer.
 		if frame, frameErr := ErrorFrame(err, tx, message, txctx, config, gasUsed); frame != nil || frameErr != nil {
 			return frame, frameErr
 		}
@@ -1309,7 +1311,8 @@ func errorTrace(err error, tx *types.Transaction, message *core.Message, txctx *
 }
 
 // WithoutFailedTxEnd returns hooks that do not end a transaction whose state transition
-// fails, so that the caller can end it with EndFailedTx.
+// fails. The caller either ends such a transaction with EndFailedTx or discards the
+// tracer.
 func WithoutFailedTxEnd(hooks *tracing.Hooks) *tracing.Hooks {
 	if hooks == nil || hooks.OnTxEnd == nil {
 		return hooks
@@ -1330,7 +1333,8 @@ func WithoutFailedTxEnd(hooks *tracing.Hooks) *tracing.Hooks {
 // sender's next one. hooks may be nil.
 func EndFailedTx(hooks *tracing.Hooks, statedb vm.StateDB, tx *types.Transaction, message *core.Message, txctx *Context, err error) (gasUsed uint64, ended bool) {
 	// Sei keeps a transaction that fails before execution in its block and bumps the
-	// sender's nonce, provided the transaction used the sender's next nonce.
+	// sender's nonce, whatever the failure, provided the transaction used the sender's
+	// next nonce.
 	if txctx == nil || txctx.BlockHash == (common.Hash{}) || statedb.GetNonce(message.From) != message.Nonce {
 		return 0, false
 	}
@@ -1371,7 +1375,8 @@ func EndFailedTx(hooks *tracing.Hooks, statedb vm.StateDB, tx *types.Transaction
 // otherwise.
 func failedTxGasUsed(err error, message *core.Message) uint64 {
 	// Sei charges the fees before it executes a transaction and does not refund them
-	// when a later check fails.
+	// when a later check fails. These are the checks that run after preCheck bought the
+	// gas, which left the sender's balance without crediting the coinbase.
 	for _, afterGasPurchase := range []error{
 		core.ErrIntrinsicGas,
 		core.ErrGasUintOverflow,
