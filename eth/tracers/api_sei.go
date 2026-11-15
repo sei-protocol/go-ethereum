@@ -258,7 +258,8 @@ func (api *API) endFailedTx(hooks *tracing.Hooks, statedb vm.StateDB, tx *types.
 }
 
 // WithoutFailedTxEnd returns hooks that do not end a transaction whose state transition
-// fails, so that the caller can end it with EndFailedTx.
+// fails. The caller either ends such a transaction with EndFailedTx or discards the
+// tracer.
 func WithoutFailedTxEnd(hooks *tracing.Hooks) *tracing.Hooks {
 	if hooks == nil || hooks.OnTxEnd == nil {
 		return hooks
@@ -279,7 +280,8 @@ func WithoutFailedTxEnd(hooks *tracing.Hooks) *tracing.Hooks {
 // sender's next one. hooks may be nil.
 func EndFailedTx(hooks *tracing.Hooks, statedb vm.StateDB, tx *types.Transaction, message *core.Message, txctx *Context, err error) (gasUsed uint64, ended bool) {
 	// Sei keeps a transaction that fails before execution in its block and bumps the
-	// sender's nonce, provided the transaction used the sender's next nonce.
+	// sender's nonce, whatever the failure, provided the transaction used the sender's
+	// next nonce.
 	if txctx == nil || txctx.BlockHash == (common.Hash{}) || statedb.GetNonce(message.From) != message.Nonce {
 		return 0, false
 	}
@@ -314,7 +316,8 @@ func EndFailedTx(hooks *tracing.Hooks, statedb vm.StateDB, tx *types.Transaction
 // otherwise.
 func failedTxGasUsed(err error, message *core.Message) uint64 {
 	// Sei charges the fees before it executes a transaction and does not refund them
-	// when a later check fails.
+	// when a later check fails. These are the checks that run after preCheck bought the
+	// gas, which left the sender's balance without crediting the coinbase.
 	for _, afterGasPurchase := range []error{
 		core.ErrIntrinsicGas,
 		core.ErrGasUintOverflow,

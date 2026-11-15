@@ -1026,6 +1026,7 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 		}
 		// If the nonce wasn't bumped because tracing failed, bump it here, as
 		// it may be needed by subsequent transactions of the same block.
+		// EndFailedTx bumps it itself for a transaction it ends.
 		if nonce := statedb.GetNonce(message.From); nonce == startingNonce {
 			statedb.SetNonce(message.From, nonce+1, tracing.NonceChangeUnspecified)
 		}
@@ -1087,7 +1088,8 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 			return errorTrace(err, tx, message, txctx, vmctx, config)
 		}
 		// The call tracers keep reporting the frame they report for any failure before
-		// execution, rather than the one they built from the ended transaction.
+		// execution, rather than the one they built from the ended transaction, which is
+		// the frame they report inside muxTracer.
 		if frame, frameErr := ErrorFrame(err, tx, message, txctx, config, gasUsed); frame != nil || frameErr != nil {
 			return frame, frameErr
 		}
