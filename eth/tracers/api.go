@@ -38,6 +38,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth/tracers/logger"
 	"github.com/ethereum/go-ethereum/eth/tracers/tracersutils"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -1082,7 +1083,8 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 			value, returnErr = errorTrace(fmt.Errorf("%s", r), tx, message, txctx, vmctx, config)
 		}
 		// if nonce isn't bumped because of tracing error, bump it here, as it may be needed
-		// for subsequent transactions in the same block being traced.
+		// for subsequent transactions in the same block being traced. EndFailedTx bumps it
+		// itself for a transaction it ends.
 		nonce := statedb.GetNonce(message.From)
 		if nonce == startingNonce {
 			statedb.SetNonce(message.From, nonce+1, tracing.NonceChangeUnspecified)
@@ -1110,7 +1112,7 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 	tracerMtx = &sync.Mutex{}
 	txCtx := core.NewEVMTxContext(message)
 	// Use height-aware chain config to get correct SSTORE gas params for historical blocks
-	evm := vm.NewEVM(vmctx, tracingStateDB, api.backend.ChainConfigAtHeight(vmctx.BlockNumber.Int64()), vm.Config{Tracer: tracer.Hooks, NoBaseFee: true}, api.backend.GetCustomPrecompiles(vmctx.BlockNumber.Int64()))
+	evm := vm.NewEVM(vmctx, tracingStateDB, api.backend.ChainConfigAtHeight(vmctx.BlockNumber.Int64()), vm.Config{Tracer: WithoutFailedTxEnd(tracer.Hooks), NoBaseFee: true}, api.backend.GetCustomPrecompiles(vmctx.BlockNumber.Int64()))
 	if precompiles != nil {
 		evm.SetPrecompiles(precompiles)
 	}
@@ -1142,7 +1144,16 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 	}
 	_, err = core.ApplyTransactionWithEVM(message, new(core.GasPool).AddGas(message.GasLimit), statedb, vmctx.BlockNumber, txctx.BlockHash, tx, &usedGas, evm)
 	if err != nil {
-		return errorTrace(err, tx, message, txctx, vmctx, config)
+		gasUsed, ended := EndFailedTx(tracer.Hooks, tracingStateDB, tx, message, txctx, err)
+		if !ended {
+			return errorTrace(err, tx, message, txctx, vmctx, config)
+		}
+		// The call tracers keep reporting the frame they report for any failure before
+		// execution, rather than the one they built from the ended transaction, which is
+		// the frame they report inside muxTracer.
+		if frame, frameErr := ErrorFrame(err, tx, message, txctx, config, gasUsed); frame != nil || frameErr != nil {
+			return frame, frameErr
+		}
 	}
 	tracerMtx.Lock()
 	res, err := tracer.GetResult()
@@ -1217,14 +1228,17 @@ func overrideConfig(original *params.ChainConfig, override *params.ChainConfig) 
 	return copy, canon
 }
 
-func errorTrace(err error, tx *types.Transaction, message *core.Message, txctx *Context, vmctx vm.BlockContext, config *TraceConfig) (value interface{}, returnErr error) {
-	if config.Tracer != nil {
+// ErrorFrame returns the single failed top-level frame that the call tracers report
+// for a transaction that failed with err before execution and was charged gasUsed.
+// It returns nil for the other tracers.
+func ErrorFrame(err error, tx *types.Transaction, message *core.Message, txctx *Context, config *TraceConfig, gasUsed uint64) (value interface{}, returnErr error) {
+	if config != nil && config.Tracer != nil {
 		switch *config.Tracer {
 		case "callTracer":
 			errTrace := map[string]interface{}{
 				"from":    message.From.Hex(),
 				"gas":     hexutil.Uint64(message.GasLimit),
-				"gasUsed": "0x0",
+				"gasUsed": hexutil.Uint64(gasUsed),
 				"input":   "0x",
 				"error":   err.Error(),
 				"type":    "CALL",
@@ -1266,7 +1280,7 @@ func errorTrace(err error, tx *types.Transaction, message *core.Message, txctx *
 				"blockHash":   txctx.BlockHash,
 				"blockNumber": txctx.BlockNumber,
 				"result": map[string]interface{}{
-					"gasUsed": "0x0",
+					"gasUsed": hexutil.Uint64(gasUsed),
 					"output":  "0x",
 				},
 				"subtraces":           0,
@@ -1282,9 +1296,97 @@ func errorTrace(err error, tx *types.Transaction, message *core.Message, txctx *
 			return json.RawMessage(bz), nil
 		}
 	}
+	return nil, nil
+}
+
+func errorTrace(err error, tx *types.Transaction, message *core.Message, txctx *Context, vmctx vm.BlockContext, config *TraceConfig) (value interface{}, returnErr error) {
+	if frame, frameErr := ErrorFrame(err, tx, message, txctx, config, 0); frame != nil || frameErr != nil {
+		return frame, frameErr
+	}
 	// Due to how our mempool works, a transaction with insufficient funds can be included in a block. For tracing purposes, we should ignore this.
 	if strings.Contains(err.Error(), core.ErrInsufficientFunds.Error()) {
 		return json.RawMessage(`{}`), nil
 	}
 	return nil, fmt.Errorf("tracing failed: %w", err)
+}
+
+// WithoutFailedTxEnd returns hooks that do not end a transaction whose state transition
+// fails. The caller either ends such a transaction with EndFailedTx or discards the
+// tracer.
+func WithoutFailedTxEnd(hooks *tracing.Hooks) *tracing.Hooks {
+	if hooks == nil || hooks.OnTxEnd == nil {
+		return hooks
+	}
+	wrapped := *hooks
+	wrapped.OnTxEnd = func(receipt *types.Receipt, err error) {
+		if err == nil {
+			hooks.OnTxEnd(receipt, nil)
+		}
+	}
+	return &wrapped
+}
+
+// EndFailedTx ends tx, whose state transition failed with err before execution, as a
+// failed transaction of its block: its top-level call fails with err, the sender's
+// nonce is bumped through statedb and tx is charged the returned gas. It returns false
+// and leaves tx untouched when tx is not part of a block, or its nonce is not the
+// sender's next one. hooks may be nil.
+func EndFailedTx(hooks *tracing.Hooks, statedb vm.StateDB, tx *types.Transaction, message *core.Message, txctx *Context, err error) (gasUsed uint64, ended bool) {
+	// Sei keeps a transaction that fails before execution in its block and bumps the
+	// sender's nonce, whatever the failure, provided the transaction used the sender's
+	// next nonce.
+	if txctx == nil || txctx.BlockHash == (common.Hash{}) || statedb.GetNonce(message.From) != message.Nonce {
+		return 0, false
+	}
+	gasUsed = failedTxGasUsed(err, message)
+	if hooks == nil {
+		hooks = &tracing.Hooks{}
+	}
+	typ, to := vm.CALL, common.Address{}
+	if message.To != nil {
+		to = *message.To
+	} else {
+		typ, to = vm.CREATE, crypto.CreateAddress(message.From, message.Nonce)
+	}
+	if hooks.OnEnter != nil {
+		hooks.OnEnter(0, byte(typ), message.From, to, message.Data, message.GasLimit, message.Value)
+	}
+	if hooks.OnExit != nil {
+		hooks.OnExit(0, nil, gasUsed, err, true)
+	}
+	statedb.SetNonce(message.From, message.Nonce+1, tracing.NonceChangeUnspecified)
+	if hooks.OnTxEnd != nil {
+		hooks.OnTxEnd(&types.Receipt{
+			Type:              tx.Type(),
+			Status:            types.ReceiptStatusFailed,
+			CumulativeGasUsed: gasUsed,
+			TxHash:            tx.Hash(),
+			GasUsed:           gasUsed,
+			BlockHash:         txctx.BlockHash,
+			BlockNumber:       txctx.BlockNumber,
+			TransactionIndex:  uint(txctx.TxIndex),
+		}, nil)
+	}
+	return gasUsed, true
+}
+
+// failedTxGasUsed returns the gas charged to a block transaction whose state transition
+// failed with err: its gas limit when the failure followed the gas purchase, and zero
+// otherwise.
+func failedTxGasUsed(err error, message *core.Message) uint64 {
+	// Sei charges the fees before it executes a transaction and does not refund them
+	// when a later check fails. These are the checks that run after preCheck bought the
+	// gas, which left the sender's balance without crediting the coinbase.
+	for _, afterGasPurchase := range []error{
+		core.ErrIntrinsicGas,
+		core.ErrGasUintOverflow,
+		core.ErrFloorDataGas,
+		core.ErrInsufficientFundsForTransfer,
+		core.ErrMaxInitCodeSizeExceeded,
+	} {
+		if errors.Is(err, afterGasPurchase) {
+			return message.GasLimit
+		}
+	}
+	return 0
 }
