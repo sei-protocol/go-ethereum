@@ -1024,6 +1024,7 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 		timeout   = defaultTraceTimeout
 	)
 	startingNonce := statedb.GetNonce(message.From)
+	var ended bool
 	defer func() {
 		if r := recover(); r != nil {
 			value, returnErr = errorTrace(fmt.Errorf("%v", r), tx, message, txctx, vmctx, config)
@@ -1033,6 +1034,9 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 		// EndFailedTx bumps it itself for a transaction it ends.
 		if nonce := statedb.GetNonce(message.From); nonce == startingNonce {
 			statedb.SetNonce(message.From, nonce+1, tracing.NonceChangeUnspecified)
+		}
+		if ended && returnErr != nil {
+			returnErr = endedTxError{returnErr}
 		}
 	}()
 	if config == nil {
@@ -1087,7 +1091,8 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 	}
 	_, _, err = core.ApplyTransactionWithEVM(ctx, message, core.NewGasPool(message.GasLimit), statedb, vmctx.BlockNumber, txctx.BlockHash, vmctx.Time, tx, evm)
 	if err != nil {
-		gasUsed, ended := api.endFailedTx(tracer.Hooks, tracingStateDB, tx, message, txctx, err)
+		var gasUsed uint64
+		gasUsed, ended = api.endFailedTx(tracer.Hooks, tracingStateDB, tx, message, txctx, err)
 		if !ended {
 			return errorTrace(err, tx, message, txctx, vmctx, config)
 		}

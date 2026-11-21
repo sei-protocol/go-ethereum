@@ -132,10 +132,12 @@ func (api *API) traceBlockWithMetadata(ctx context.Context, block *types.Block, 
 		res, err := api.traceTx(ctx, tx, msg, txctx, blockCtx, statedb, config, nil)
 		if err != nil {
 			results[idx] = &TxTraceResult{TxHash: tx.Hash(), Error: err.Error()}
-			// Discard the partial changes of the failed transaction. The native
-			// state only changes once a transaction passes its pre-checks and
-			// has no snapshot to revert to otherwise.
-			if _, native := vm.NativeState(statedb); !native {
+			// Discard the partial changes of the failed transaction. A transaction
+			// that EndFailedTx ended has none: later transactions of its sender rely
+			// on the nonce it bumped. The native state only changes once a
+			// transaction passes its pre-checks and has no snapshot to revert to
+			// otherwise.
+			if _, native := vm.NativeState(statedb); !native && !errors.As(err, new(endedTxError)) {
 				statedb.RevertToSnapshot(0)
 			}
 		} else {
@@ -255,6 +257,16 @@ func (api *API) endFailedTx(hooks *tracing.Hooks, statedb vm.StateDB, tx *types.
 		return 0, false
 	}
 	return EndFailedTx(hooks, statedb, tx, message, txctx, err)
+}
+
+// endedTxError is the error of a trace that failed after EndFailedTx ended its
+// transaction, which left the state as the block did.
+type endedTxError struct {
+	error
+}
+
+func (e endedTxError) Unwrap() error {
+	return e.error
 }
 
 // WithoutFailedTxEnd returns hooks that do not end a transaction whose state transition
