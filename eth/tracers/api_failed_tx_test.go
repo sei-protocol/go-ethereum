@@ -54,6 +54,8 @@ var (
 	// floorInput is calldata of 100 non-zero bytes: 22600 gas of intrinsic gas, and
 	// 25000 gas of EIP-7623 floor data gas.
 	floorInput = append(common.FromHex("0xa9059cbb"), bytes.Repeat([]byte{1}, 96)...)
+	// jsTracer is a JS tracer that reports the top-level call of a transaction.
+	jsTracer = `{result: function(ctx) { return {type: ctx.type, error: ctx.error, gasUsed: ctx.gasUsed}; }, fault: function() {}}`
 )
 
 // replayBackend replays the blocks of a test chain under a higher base fee or the rules
@@ -244,7 +246,7 @@ func TestTraceTxBelowBaseFee(t *testing.T) {
 		{name: "muxTracer flatCallTracer", config: traceConfig("muxTracer", `{"flatCallTracer":{}}`), want: fmt.Sprintf(
 			`{"flatCallTracer":[{"action":{"callType":"call","from":"%s","gas":"0x7530","input":"%s","to":"%s","value":"0x3e8"},"blockHash":"%s","blockNumber":1,"error":"%s","subtraces":0,"traceAddress":[],"transactionHash":"%s","transactionPosition":0,"type":"call"}]}`,
 			lower(failedTxSender), input, lower(failedTxTo), block.Hash().Hex(), txErr, tx.Hash().Hex())},
-		{name: "js", config: traceConfig(`{result: function(ctx) { return {type: ctx.type, error: ctx.error, gasUsed: ctx.gasUsed}; }, fault: function() {}}`, ""), want: fmt.Sprintf(
+		{name: "js", config: traceConfig(jsTracer, ""), want: fmt.Sprintf(
 			`{"type":"CALL","error":"%s","gasUsed":0}`, txErr)},
 	})
 }
@@ -304,6 +306,7 @@ func TestTraceBlockFailedTxThenSameSender(t *testing.T) {
 		{name: "prestateTracer diffMode", config: traceConfig("prestateTracer", `{"diffMode":true}`)},
 		{name: "4byteTracer", config: traceConfig("4byteTracer", "")},
 		{name: "muxTracer", config: traceConfig("muxTracer", `{"callTracer":{},"prestateTracer":{"diffMode":true}}`)},
+		{name: "js", config: traceConfig(jsTracer, "")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			results, err := api.TraceBlockByNumber(context.Background(), number, tc.config)
@@ -377,6 +380,8 @@ func TestTraceTxRejectedBeforeExecution(t *testing.T) {
 	api := tracers.NewAPI(&rejectingBackend{backend})
 
 	_, err := api.TraceTransaction(context.Background(), txs[0].Hash(), traceConfig("prestateTracer", ""))
+	require.ErrorIs(t, err, core.ErrFeeCapTooLow)
+	_, err = api.TraceBlockByNumber(context.Background(), rpc.BlockNumber(block.NumberU64()), traceConfig(jsTracer, ""))
 	require.ErrorIs(t, err, core.ErrFeeCapTooLow)
 }
 

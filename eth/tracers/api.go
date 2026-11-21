@@ -592,6 +592,13 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, metadata []t
 		core.PreExecution(ctx, block.BeaconRoot(), parent.Header(), api.backend.ChainConfigAtHeight(block.Number().Int64()), evm, block.Number(), block.Time())
 	}
 
+	// A block described by metadata is traced in order, whatever the tracer: its
+	// replay runs the transactions outside the EVM block between those inside it,
+	// and a copy of such a chain's state (Sei) keeps reading the writes made to the
+	// original afterwards, so it cannot serve as the state of a parallel trace.
+	if metadata != nil {
+		return api.traceBlockWithMetadata(ctx, block, metadata, blockCtx, statedb, config)
+	}
 	// JS tracers have high overhead. In this case run a parallel
 	// process that generates states in one thread and traces txes
 	// in separate worker threads.
@@ -601,9 +608,6 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, metadata []t
 		}
 	}
 	// Native tracers have low overhead
-	if metadata != nil {
-		return api.traceBlockWithMetadata(ctx, block, metadata, blockCtx, statedb, config)
-	}
 	var (
 		txs       = block.Transactions()
 		blockHash = block.Hash()
