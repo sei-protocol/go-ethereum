@@ -286,7 +286,8 @@ func EndFailedTx(hooks *tracing.Hooks, statedb vm.StateDB, tx *types.Transaction
 		return 0, false
 	}
 	gasUsed = failedTxGasUsed(err, message)
-	typ, to := vm.CALL, common.Address{}
+	typ := vm.CALL
+	var to common.Address
 	if message.To != nil {
 		to = *message.To
 	} else {
