@@ -357,6 +357,29 @@ func TestTraceBlockFailedTxResultFails(t *testing.T) {
 	require.Equal(t, txs[1].Hash(), results[1].TxHash)
 }
 
+// TestTraceBlockTxResultFails traces a block whose tracer fails to return the result of
+// a transaction that executed. The next transaction of the same sender still relies on
+// the executed transaction bumping its nonce.
+func TestTraceBlockTxResultFails(t *testing.T) {
+	backend, block, txs := newReplayBackend(t, func(baseFee *big.Int) []types.TxData {
+		feeCap := new(big.Int).Mul(baseFee, common.Big2)
+		return []types.TxData{
+			transfer(0, feeCap, params.TxGas, nil),
+			transfer(1, feeCap, params.TxGas, nil),
+		}
+	})
+	backend.metadata = true
+	api := tracers.NewAPI(backend)
+	failing := `{result: function(ctx) { if (ctx.txIndex == 0) { throw new Error("no result"); } return ctx.gasUsed; }, fault: function() {}}`
+
+	results, err := api.TraceBlockByNumber(context.Background(), rpc.BlockNumber(block.NumberU64()), traceConfig(failing, ""))
+	require.NoError(t, err)
+	require.Len(t, results, len(txs))
+	require.Contains(t, results[0].Error, "no result")
+	require.Empty(t, results[1].Error, "transaction 1 starts from the nonce transaction 0 bumped")
+	require.Equal(t, txs[1].Hash(), results[1].TxHash)
+}
+
 // TestTraceCallBelowBaseFee checks that a call whose fee cap falls below the base fee
 // still reports the failure, as a call is not part of a block.
 func TestTraceCallBelowBaseFee(t *testing.T) {

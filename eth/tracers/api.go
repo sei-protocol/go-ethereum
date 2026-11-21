@@ -1102,6 +1102,10 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 		if frame, frameErr := ErrorFrame(err, tx, message, txctx, config, gasUsed); frame != nil || frameErr != nil {
 			return frame, frameErr
 		}
+	} else {
+		// The transaction executed, so the state holds it whether or not the tracer
+		// returns its result.
+		ended = true
 	}
 	tracerMtx.Lock()
 	res, err := tracer.GetResult()
