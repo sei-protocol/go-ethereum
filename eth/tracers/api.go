@@ -592,6 +592,13 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, metadata []t
 		core.PreExecution(ctx, block.BeaconRoot(), parent.Header(), api.backend.ChainConfigAtHeight(block.Number().Int64()), evm, block.Number(), block.Time())
 	}
 
+	// A block described by metadata is traced in order, whatever the tracer: its
+	// replay runs the transactions outside the EVM block between those inside it,
+	// and a copy of such a chain's state (Sei) keeps reading the writes made to the
+	// original afterwards, so it cannot serve as the state of a parallel trace.
+	if metadata != nil {
+		return api.traceBlockWithMetadata(ctx, block, metadata, blockCtx, statedb, config)
+	}
 	// JS tracers have high overhead. In this case run a parallel
 	// process that generates states in one thread and traces txes
 	// in separate worker threads.
@@ -601,9 +608,6 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, metadata []t
 		}
 	}
 	// Native tracers have low overhead
-	if metadata != nil {
-		return api.traceBlockWithMetadata(ctx, block, metadata, blockCtx, statedb, config)
-	}
 	var (
 		txs       = block.Transactions()
 		blockHash = block.Hash()
@@ -1020,14 +1024,19 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 		timeout   = defaultTraceTimeout
 	)
 	startingNonce := statedb.GetNonce(message.From)
+	var ended bool
 	defer func() {
 		if r := recover(); r != nil {
 			value, returnErr = errorTrace(fmt.Errorf("%v", r), tx, message, txctx, vmctx, config)
 		}
 		// If the nonce wasn't bumped because tracing failed, bump it here, as
 		// it may be needed by subsequent transactions of the same block.
+		// EndFailedTx bumps it itself for a transaction it ends.
 		if nonce := statedb.GetNonce(message.From); nonce == startingNonce {
 			statedb.SetNonce(message.From, nonce+1, tracing.NonceChangeUnspecified)
+		}
+		if ended && returnErr != nil {
+			returnErr = endedTxError{returnErr}
 		}
 	}()
 	if config == nil {
@@ -1048,7 +1057,7 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 		}
 	}
 	tracingStateDB := state.NewHookedState(statedb, tracer.Hooks)
-	evm := api.newEVM(vmctx, tracingStateDB, vmctx.BlockNumber.Int64(), vm.Config{Tracer: tracer.Hooks, NoBaseFee: true})
+	evm := api.newEVM(vmctx, tracingStateDB, vmctx.BlockNumber.Int64(), vm.Config{Tracer: WithoutFailedTxEnd(tracer.Hooks), NoBaseFee: true})
 	defer evm.Release()
 
 	if precompiles != nil {
@@ -1082,7 +1091,17 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 	}
 	_, _, err = core.ApplyTransactionWithEVM(ctx, message, core.NewGasPool(message.GasLimit), statedb, vmctx.BlockNumber, txctx.BlockHash, vmctx.Time, tx, evm)
 	if err != nil {
-		return errorTrace(err, tx, message, txctx, vmctx, config)
+		var gasUsed uint64
+		gasUsed, ended = api.endFailedTx(tracer.Hooks, tracingStateDB, tx, message, txctx, err)
+		if !ended {
+			return errorTrace(err, tx, message, txctx, vmctx, config)
+		}
+		// The call tracers keep reporting the frame they report for any failure before
+		// execution, rather than the one they built from the ended transaction, which is
+		// the frame they report inside muxTracer.
+		if frame, frameErr := ErrorFrame(err, tx, message, txctx, config, gasUsed); frame != nil || frameErr != nil {
+			return frame, frameErr
+		}
 	}
 	tracerMtx.Lock()
 	res, err := tracer.GetResult()
